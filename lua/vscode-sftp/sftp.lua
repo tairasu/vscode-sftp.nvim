@@ -15,6 +15,11 @@ end
 
 -- Create mkdir commands for each directory in the path
 local function create_mkdir_commands(path)
+    -- Skip if path is '.' or empty
+    if path == '.' or path == '' then
+        return ''
+    end
+    
     local parts = vim.split(path, '/', { plain = true })
     local commands = {}
     local current = ''
@@ -89,7 +94,7 @@ local function execute_sftp_command(conf, command, callback)
     end
     
     -- Add remote directory change command at the start
-    -- Use -mkdir to create the remote path if it doesn't exist
+    -- First ensure the remote path exists
     local setup_cmds = string.format('-mkdir %s\ncd %s\n',
         vim.fn.shellescape(conf.remotePath),
         vim.fn.shellescape(conf.remotePath)
@@ -116,7 +121,9 @@ local function execute_sftp_command(conf, command, callback)
         on_stderr = function(_, data)
             if data then
                 -- Filter out "Couldn't create directory" messages when using -mkdir
-                if not data:match("Couldn't create directory") then
+                if not data:match("Couldn't create directory") and
+                   not data:match("remote mkdir.*: Failure") and
+                   not data:match("stat.*: No such file or directory") then
                     table.insert(errors, data)
                     debug_log("STDERR: " .. data, conf)
                 end
@@ -128,6 +135,8 @@ local function execute_sftp_command(conf, command, callback)
                 -- Clean up temp file
                 os.remove(temp_script)
                 
+                -- Consider the operation successful if there are no real errors
+                -- (ignoring mkdir failures and stat failures)
                 if return_val == 0 or #errors == 0 then
                     callback(true, output)
                 else
@@ -182,11 +191,18 @@ function M.upload_current_file()
         batch_cmd = create_mkdir_commands(remote_dir) .. '\n'
     end
     
-    -- Add cd and put commands
-    batch_cmd = batch_cmd .. string.format('cd %s\nput %s\n', 
-        vim.fn.shellescape(remote_dir),
-        vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t'))
-    )
+    -- Add put command (no cd needed for simple uploads)
+    if remote_dir == '.' then
+        batch_cmd = batch_cmd .. string.format('put %s\n',
+            vim.fn.shellescape(current_file)
+        )
+    else
+        batch_cmd = batch_cmd .. string.format('put %s %s/%s\n',
+            vim.fn.shellescape(current_file),
+            vim.fn.shellescape(remote_dir),
+            vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t'))
+        )
+    end
     
     execute_sftp_command(conf, batch_cmd, function(success, output)
         if success then
