@@ -42,7 +42,7 @@ function M.upload_current_file()
   )
 
   for _, context in pairs(conf.contexts) do
-    async.void(function()
+    async.run(function()
       local conn_str, auth = build_connection_string(context)
       local remote_file = context.remotePath .. "/" .. relative_path
       
@@ -55,13 +55,16 @@ function M.upload_current_file()
         context.host
       )
 
-      local result = vim.fn.system(cmd)
+      local handle = io.popen(cmd)
+      local result = handle:read("*a")
+      handle:close()
+      
       if vim.v.shell_error ~= 0 then
         vim.notify("Upload failed: " .. result, vim.log.levels.ERROR)
       else
         vim.notify("Uploaded to " .. (context.name or context.host), vim.log.levels.INFO)
       end
-    end)()
+    end, function() end) -- Empty callback to ensure async completion
   end
 end
 
