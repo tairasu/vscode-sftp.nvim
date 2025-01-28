@@ -144,8 +144,6 @@ function M.setup(opts)
             config.clear_cache()
         end
     })
-
-    vim.notify("vscode-sftp.nvim loaded successfully!", vim.log.levels.INFO)
 end
 
 return M

@@ -32,30 +32,65 @@ local function create_sftp_commands(conf)
     return commands
 end
 
--- Execute SFTP command
+-- Execute SFTP command with password support
 local function execute_sftp_command(conf, command, callback)
     local args = create_sftp_commands(conf)
     local output = {}
     local errors = {}
     
-    Job:new({
+    -- Create a temporary script file for batch commands
+    local temp_script = vim.fn.tempname()
+    local f = io.open(temp_script, 'w')
+    if not f then
+        vim.schedule(function()
+            vim.notify('Failed to create temporary script file', vim.log.levels.ERROR)
+        end)
+        return
+    end
+    f:write(command)
+    f:close()
+    
+    -- Add the script file to arguments
+    table.insert(args, "-b")
+    table.insert(args, temp_script)
+    
+    local job = Job:new({
         command = 'sftp',
         args = args,
         on_stdout = function(_, data)
-            table.insert(output, data)
-        end,
-        on_stderr = function(_, data)
-            table.insert(errors, data)
-        end,
-        on_exit = function(j, return_val)
-            if return_val == 0 then
-                callback(true, output)
-            else
-                callback(false, errors)
+            if data then
+                table.insert(output, data)
             end
         end,
-        writer = command
-    }):start()
+        on_stderr = function(_, data)
+            if data then
+                table.insert(errors, data)
+            end
+        end,
+        on_exit = function(j, return_val)
+            -- Clean up temp file
+            vim.fn.delete(temp_script)
+            
+            -- Schedule the callback to avoid the E5560 error
+            vim.schedule(function()
+                if return_val == 0 then
+                    callback(true, output)
+                else
+                    callback(false, errors)
+                end
+            end)
+        end
+    })
+    
+    -- If password is provided, prepare it for input
+    if conf.password then
+        job:start()
+        vim.schedule(function()
+            job:send(conf.password .. "\n")
+        end)
+    else
+        job:start()
+    end
 end
 
 -- Upload a file to remote
@@ -79,7 +114,7 @@ function M.upload_current_file()
     
     execute_sftp_command(conf, mkdir_cmd, function(success, output)
         if success then
-            vim.notify(string.format('Uploaded %s to %s', current_file, remote_path), vim.log.levels.INFO)
+            vim.notify(string.format('Uploaded %s', current_file), vim.log.levels.INFO)
         else
             vim.notify(string.format('Failed to upload %s: %s', current_file, table.concat(output, '\n')), vim.log.levels.ERROR)
         end
@@ -108,7 +143,7 @@ function M.download_current_file()
     
     execute_sftp_command(conf, get_cmd, function(success, output)
         if success then
-            vim.notify(string.format('Downloaded %s from %s', current_file, remote_path), vim.log.levels.INFO)
+            vim.notify(string.format('Downloaded %s', current_file), vim.log.levels.INFO)
             vim.cmd('e!') -- Reload the buffer
         else
             vim.notify(string.format('Failed to download %s: %s', current_file, table.concat(output, '\n')), vim.log.levels.ERROR)
@@ -128,8 +163,6 @@ function M.sync_project()
     
     -- Create a list of files to sync
     local files = vim.fn.systemlist('git ls-files 2>/dev/null || find . -type f')
-    local count = 0
-    local errors = 0
     local total = #files
     
     -- Create batch upload command
