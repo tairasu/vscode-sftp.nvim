@@ -1,6 +1,30 @@
 local M = {}
 
+-- Add module loading verification
+local function verify_modules()
+  local modules = {
+    "vscode-sftp.config",
+    "vscode-sftp.sftp",
+    "plenary.async"
+  }
+  
+  for _, module in ipairs(modules) do
+    local ok, _ = pcall(require, module)
+    if not ok then
+      return false, "Failed to load module: " .. module
+    end
+  end
+  return true
+end
+
 function M.setup()
+  -- Verify all required modules are loaded
+  local modules_ok, err = verify_modules()
+  if not modules_ok then
+    vim.notify(err, vim.log.levels.ERROR)
+    return
+  end
+
   local ok, err = pcall(function()
     vim.notify("vscode-sftp.nvim loaded successfully!", vim.log.levels.INFO)
     
