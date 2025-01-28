@@ -56,12 +56,20 @@ function M.upload_current_file()
         remote_file
       )
 
+      local error_output = {}
       local handle = vim.fn.jobstart(cmd, {
+        on_stdout = function(_, data)
+          -- Collect stdout if needed
+        end,
+        on_stderr = function(_, data)
+          table.insert(error_output, data)
+        end,
         on_exit = function(_, code, _)
           if code == 0 then
             vim.notify("Uploaded to " .. (context.name or context.host), vim.log.levels.INFO)
           else
-            vim.notify("Upload failed with code " .. code, vim.log.levels.ERROR)
+            local error_msg = table.concat(error_output, "\n")
+            vim.notify("Upload failed:\n" .. error_msg, vim.log.levels.ERROR)
           end
         end
       })
