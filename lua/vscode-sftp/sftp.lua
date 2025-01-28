@@ -4,6 +4,22 @@ local config = require('vscode-sftp.config')
 local Job = require('plenary.job')
 local Path = require('plenary.path')
 
+-- Create mkdir commands for each directory in the path
+local function create_mkdir_commands(path)
+    local parts = vim.split(path, '/', { plain = true })
+    local commands = {}
+    local current = ''
+    
+    for _, part in ipairs(parts) do
+        if part ~= '' then
+            current = current .. '/' .. part
+            table.insert(commands, 'mkdir ' .. vim.fn.shellescape(current))
+        end
+    end
+    
+    return table.concat(commands, '\n')
+end
+
 -- Get remote path for a local file
 local function get_remote_path(conf, local_path)
     local workspace_root = vim.fn.getcwd()
@@ -110,8 +126,15 @@ function M.upload_current_file()
     
     -- Create remote directory structure and upload file
     local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
-    local batch_cmd = string.format('mkdir -p %s\ncd %s\nput %s\n', 
-        vim.fn.shellescape(remote_dir),
+    local batch_cmd = ''
+    
+    -- Add mkdir commands for directory structure
+    if remote_dir ~= '.' then
+        batch_cmd = create_mkdir_commands(remote_dir) .. '\n'
+    end
+    
+    -- Add cd and put commands
+    batch_cmd = batch_cmd .. string.format('cd %s\nput %s\n', 
         vim.fn.shellescape(remote_dir),
         vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t'))
     )
@@ -191,8 +214,10 @@ function M.sync_project()
                     vim.fn.shellescape(file)
                 )
             else
-                batch_cmd = batch_cmd .. string.format('mkdir -p %s\ncd %s\nput %s\ncd ..\n',
-                    vim.fn.shellescape(remote_dir),
+                -- Add mkdir commands for directory structure
+                batch_cmd = batch_cmd .. create_mkdir_commands(remote_dir) .. '\n'
+                -- Add cd and put commands
+                batch_cmd = batch_cmd .. string.format('cd %s\nput %s\ncd ..\n',
                     vim.fn.shellescape(remote_dir),
                     vim.fn.shellescape(vim.fn.fnamemodify(file, ':t'))
                 )
