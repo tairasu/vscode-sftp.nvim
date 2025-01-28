@@ -5,27 +5,30 @@ local M = {}
 
 local function get_password(prompt)
   vim.fn.inputsave()
-  local password = vim.fn.inputsecret(prompt or "SFTP Password: ")
+  local password = vim.fn.inputsecret(prompt)
   vim.fn.inputrestore()
   return password
 end
 
 local function build_connection_string(context)
-  local auth = ""
   if context.privateKeyPath then
-    auth = string.format("set sftp:connect-program 'ssh -a -x -i %s';", context.privateKeyPath)
+    return string.format(
+      "set sftp:connect-program 'ssh -a -x -i %s'; open sftp://%s@%s:%d",
+      context.privateKeyPath,
+      context.username,
+      context.host,
+      context.port
+    )
   else
-    -- Prompt for password if not provided
     local password = context.password or get_password("SFTP Password for " .. context.host .. ": ")
-    auth = string.format("set sftp:password \"%s\";", password)
+    return string.format(
+      "set sftp:password '%s'; open sftp://%s@%s:%d",
+      password,
+      context.username,
+      context.host,
+      context.port
+    )
   end
-  
-  return string.format(
-    "sftp://%s@%s:%d",
-    context.username,
-    context.host,
-    context.port
-  ), auth
 end
 
 function M.upload_current_file()
@@ -42,29 +45,24 @@ function M.upload_current_file()
   )
 
   for _, context in pairs(conf.contexts) do
-    async.run(function()
-      local conn_str, auth = build_connection_string(context)
+    async.void(function()
+      local connection_cmd = build_connection_string(context)
       local remote_file = context.remotePath .. "/" .. relative_path
       
       local cmd = string.format(
-        "lftp -u %s -e 'set sftp:auto-confirm yes; %s put %s -o %s; quit' %s",
-        context.username,
-        auth,
+        "lftp -e '%s; put %s -o %s; bye'",
+        connection_cmd,
         current_file,
-        remote_file,
-        context.host
+        remote_file
       )
 
-      local handle = io.popen(cmd)
-      local result = handle:read("*a")
-      handle:close()
-      
-      if vim.v.shell_error ~= 0 then
-        vim.notify("Upload failed: " .. result, vim.log.levels.ERROR)
+      local success, result = async.util.system(cmd, { timeout = 10000 })
+      if not success then
+        vim.notify("Upload failed: " .. (result or "timeout"), vim.log.levels.ERROR)
       else
         vim.notify("Uploaded to " .. (context.name or context.host), vim.log.levels.INFO)
       end
-    end, function() end) -- Empty callback to ensure async completion
+    end)()
   end
 end
 
