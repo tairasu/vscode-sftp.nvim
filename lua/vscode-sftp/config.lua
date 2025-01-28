@@ -29,6 +29,8 @@ function M.parse_config(path)
     ctx.protocol = ctx.protocol or "sftp"
     ctx.port = ctx.port or 22
     ctx.uploadOnSave = ctx.uploadOnSave or false
+    -- Don't store password in config file
+    ctx.password = nil
   end
   
   return conf
