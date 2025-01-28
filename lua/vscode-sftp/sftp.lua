@@ -1,124 +1,170 @@
-local config = require("vscode-sftp.config")
-local async = require("plenary.async")
-
 local M = {}
 
-local function get_password(prompt)
-  vim.fn.inputsave()
-  local password = vim.fn.inputsecret(prompt)
-  vim.fn.inputrestore()
-  return password
+local config = require('vscode-sftp.config')
+local ssh = require('ssh')
+local Path = require('plenary.path')
+
+-- Cache for SFTP connections
+local connections = {}
+
+-- Get or create an SFTP connection for a config
+local function get_connection(conf)
+    local key = conf.host .. ':' .. conf.port .. ':' .. conf.username
+    
+    if connections[key] then
+        return connections[key]
+    end
+    
+    -- Create new connection
+    local conn_config = {
+        host = conf.host,
+        port = conf.port,
+        user = conf.username
+    }
+    
+    -- Add authentication method
+    if conf.password then
+        conn_config.password = conf.password
+    elseif conf.privateKeyPath then
+        conn_config.private_key = vim.fn.expand(conf.privateKeyPath)
+    end
+    
+    local connection = ssh.create_connection(conn_config)
+    connections[key] = connection
+    
+    return connection
 end
 
-local function build_connection_string(context)
-  if context.privateKeyPath then
-    return string.format(
-      "set sftp:connect-program 'ssh -a -x -i %s'; open sftp://%s@%s:%d",
-      context.privateKeyPath,
-      context.username,
-      context.host,
-      context.port
-    )
-  else
-    local password = context.password or get_password("SFTP Password for " .. context.host .. ": ")
-    return string.format(
-      "set sftp:password '%s'; open sftp://%s@%s:%d",
-      password,
-      context.username,
-      context.host,
-      context.port
-    )
-  end
+-- Get remote path for a local file
+local function get_remote_path(conf, local_path)
+    local workspace_root = vim.fn.getcwd()
+    local relative_path = Path:new(local_path):make_relative(workspace_root)
+    return Path:new(conf.remotePath):joinpath(relative_path).filename
 end
 
+-- Upload a file to remote
 function M.upload_current_file()
-  local config_path = config.find_config()
-  if not config_path then
-    vim.notify("No sftp.json found", vim.log.levels.WARN)
-    return
-  end
-
-  local conf = config.parse_config(config_path)
-  local current_file = vim.fn.expand("%:p")
-  local relative_path = vim.fn.fnamemodify(
-    current_file, ":." .. vim.fn.fnamemodify(config_path, ":h:h")
-  )
-
-  for _, context in pairs(conf.contexts) do
-    async.void(function()
-      local connection_cmd = build_connection_string(context)
-      local remote_file = context.remotePath .. "/" .. relative_path
-      
-      local cmd = string.format(
-        "lftp -e '%s; put %s -o %s; bye'",
-        connection_cmd,
-        current_file,
-        remote_file
-      )
-
-      local error_output = {}
-      local handle = vim.fn.jobstart(cmd, {
-        on_stdout = function(_, data)
-          -- Collect stdout if needed
-        end,
-        on_stderr = function(_, data)
-          table.insert(error_output, data)
-        end,
-        on_exit = function(_, code, _)
-          if code == 0 then
-            vim.notify("Uploaded to " .. (context.name or context.host), vim.log.levels.INFO)
-          else
-            local error_msg = table.concat(error_output, "\n")
-            vim.notify("Upload failed:\n" .. error_msg, vim.log.levels.ERROR)
-          end
-        end
-      })
-      
-      if handle == 0 or handle == -1 then
-        vim.notify("Failed to start upload job", vim.log.levels.ERROR)
-      end
-    end)()
-  end
+    local conf = config.find_config()
+    if not conf then
+        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        return
+    end
+    
+    local current_file = vim.fn.expand('%:p')
+    local remote_path = get_remote_path(conf, current_file)
+    
+    local conn = get_connection(conf)
+    
+    -- Ensure remote directory exists
+    local remote_dir = vim.fn.fnamemodify(remote_path, ':h')
+    conn:execute('mkdir -p ' .. vim.fn.shellescape(remote_dir))
+    
+    -- Upload file
+    local success = conn:upload(current_file, remote_path)
+    
+    if success then
+        vim.notify(string.format('Uploaded %s to %s', current_file, remote_path), vim.log.levels.INFO)
+    else
+        vim.notify(string.format('Failed to upload %s', current_file), vim.log.levels.ERROR)
+    end
 end
 
-function M.download_file()
-  local config_path = config.find_config()
-  if not config_path then
-    vim.notify("No sftp.json found", vim.log.levels.WARN)
-    return
-  end
+-- Download a file from remote
+function M.download_current_file()
+    local conf = config.find_config()
+    if not conf then
+        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        return
+    end
+    
+    local current_file = vim.fn.expand('%:p')
+    local remote_path = get_remote_path(conf, current_file)
+    
+    local conn = get_connection(conf)
+    
+    -- Download file
+    local success = conn:download(remote_path, current_file)
+    
+    if success then
+        vim.notify(string.format('Downloaded %s from %s', current_file, remote_path), vim.log.levels.INFO)
+        -- Reload the buffer to show new contents
+        vim.cmd('e!')
+    else
+        vim.notify(string.format('Failed to download %s', current_file), vim.log.levels.ERROR)
+    end
+end
 
-  local conf = config.parse_config(config_path)
-  local current_file = vim.fn.expand("%:p")
-  local relative_path = vim.fn.fnamemodify(
-    current_file, ":." .. vim.fn.fnamemodify(config_path, ":h:h")
-  )
+-- Sync entire project
+function M.sync_project()
+    local conf = config.find_config()
+    if not conf then
+        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        return
+    end
+    
+    local conn = get_connection(conf)
+    local workspace_root = vim.fn.getcwd()
+    
+    -- Create a list of files to sync
+    local files = vim.fn.systemlist('git ls-files 2>/dev/null || find . -type f')
+    local count = 0
+    local errors = 0
+    
+    for _, file in ipairs(files) do
+        -- Skip ignored files
+        local skip = false
+        if conf.ignore then
+            for _, pattern in ipairs(conf.ignore) do
+                if file:match(pattern) then
+                    skip = true
+                    break
+                end
+            end
+        end
+        
+        if not skip then
+            local local_path = Path:new(workspace_root):joinpath(file).filename
+            local remote_path = get_remote_path(conf, local_path)
+            
+            -- Ensure remote directory exists
+            local remote_dir = vim.fn.fnamemodify(remote_path, ':h')
+            conn:execute('mkdir -p ' .. vim.fn.shellescape(remote_dir))
+            
+            -- Upload file
+            local success = conn:upload(local_path, remote_path)
+            if success then
+                count = count + 1
+            else
+                errors = errors + 1
+            end
+        end
+    end
+    
+    vim.notify(string.format('Sync complete: %d files uploaded, %d errors', count, errors), 
+              errors > 0 and vim.log.levels.WARN or vim.log.levels.INFO)
+end
 
-  for _, context in pairs(conf.contexts) do
-    async.void(function()
-      local conn_str, auth = build_connection_string(context)
-      local remote_file = context.remotePath .. "/" .. relative_path
-      
-      -- Create local directory structure if needed
-      local dir = vim.fn.fnamemodify(current_file, ":h")
-      vim.fn.mkdir(dir, "p")
-
-      local cmd = string.format(
-        "lftp -e '%s get %s -o %s; quit' %s",
-        auth,
-        remote_file,
-        current_file,
-        conn_str
-      )
-
-      local result = vim.fn.system(cmd)
-      if vim.v.shell_error ~= 0 then
-        vim.notify("Download failed: " .. result, vim.log.levels.ERROR)
-      else
-        vim.notify("Downloaded from " .. (context.name or context.host), vim.log.levels.INFO)
-      end
-    end)()
-  end
+-- Delete remote file/directory
+function M.delete_remote()
+    local conf = config.find_config()
+    if not conf then
+        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        return
+    end
+    
+    local current_file = vim.fn.expand('%:p')
+    local remote_path = get_remote_path(conf, current_file)
+    
+    local conn = get_connection(conf)
+    
+    -- Delete file
+    local success = conn:execute('rm -rf ' .. vim.fn.shellescape(remote_path))
+    
+    if success then
+        vim.notify(string.format('Deleted %s', remote_path), vim.log.levels.INFO)
+    else
+        vim.notify(string.format('Failed to delete %s', remote_path), vim.log.levels.ERROR)
+    end
 end
 
 return M
