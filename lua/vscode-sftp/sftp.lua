@@ -4,6 +4,15 @@ local config = require('vscode-sftp.config')
 local Job = require('plenary.job')
 local Path = require('plenary.path')
 
+-- Debug logging function
+local function debug_log(msg, conf)
+    if conf and conf.debug then
+        vim.schedule(function()
+            vim.notify("[SFTP Debug] " .. msg, vim.log.levels.DEBUG)
+        end)
+    end
+end
+
 -- Create mkdir commands for each directory in the path
 local function create_mkdir_commands(path)
     local parts = vim.split(path, '/', { plain = true })
@@ -33,8 +42,19 @@ local function create_sftp_commands(conf)
     
     -- Add connection details
     if conf.privateKeyPath then
+        local key_path = vim.fn.expand(conf.privateKeyPath)
+        -- Check if the key file exists and has correct permissions
+        if vim.fn.filereadable(key_path) == 0 then
+            error("SSH key file not found: " .. key_path)
+        end
+        
+        -- Add identity file
         table.insert(commands, "-i")
-        table.insert(commands, vim.fn.expand(conf.privateKeyPath))
+        table.insert(commands, key_path)
+        
+        -- Add options for strict host key checking
+        table.insert(commands, "-o")
+        table.insert(commands, "StrictHostKeyChecking=no")
     end
     
     -- Add port if not default
@@ -55,6 +75,8 @@ local function execute_sftp_command(conf, command, callback)
     local output = {}
     local errors = {}
     
+    debug_log("SFTP command args: " .. vim.inspect(args), conf)
+    
     -- Create a temporary script file for batch commands
     local temp_script = vim.fn.tempname()
     local f = io.open(temp_script, 'w')
@@ -66,9 +88,12 @@ local function execute_sftp_command(conf, command, callback)
     end
     
     -- Add remote directory change command at the start
-    f:write("cd " .. vim.fn.shellescape(conf.remotePath) .. "\n")
+    local cd_cmd = "cd " .. vim.fn.shellescape(conf.remotePath) .. "\n"
+    f:write(cd_cmd)
     f:write(command)
     f:close()
+    
+    debug_log("Batch commands:\n" .. cd_cmd .. command, conf)
     
     -- Add the batch file argument
     table.insert(args, 1, "-b")  -- Insert at the beginning
@@ -80,11 +105,13 @@ local function execute_sftp_command(conf, command, callback)
         on_stdout = function(_, data)
             if data then
                 table.insert(output, data)
+                debug_log("STDOUT: " .. data, conf)
             end
         end,
         on_stderr = function(_, data)
             if data then
                 table.insert(errors, data)
+                debug_log("STDERR: " .. data, conf)
             end
         end,
         on_exit = function(j, return_val)
@@ -96,7 +123,21 @@ local function execute_sftp_command(conf, command, callback)
                 if return_val == 0 then
                     callback(true, output)
                 else
-                    callback(false, errors)
+                    -- Check for common error patterns
+                    local error_msg = table.concat(errors, "\n")
+                    if error_msg:match("Permission denied") then
+                        if conf.privateKeyPath then
+                            error_msg = error_msg .. "\nPossible issues:\n" ..
+                                      "1. Check SSH key permissions (should be 600)\n" ..
+                                      "2. Verify the key is added to the server\n" ..
+                                      "3. Ensure remote user has write permissions"
+                        else
+                            error_msg = error_msg .. "\nPossible issues:\n" ..
+                                      "1. Check username/password\n" ..
+                                      "2. Ensure remote user has write permissions"
+                        end
+                    end
+                    callback(false, {error_msg})
                 end
             end)
         end
