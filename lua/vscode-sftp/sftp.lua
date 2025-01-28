@@ -68,11 +68,11 @@ local function execute_sftp_command(conf, command, callback)
             end
         end,
         on_exit = function(j, return_val)
-            -- Clean up temp file
-            vim.fn.delete(temp_script)
-            
-            -- Schedule the callback to avoid the E5560 error
+            -- Schedule both the file deletion and callback to avoid E5560
             vim.schedule(function()
+                -- Clean up temp file
+                os.remove(temp_script)
+                
                 if return_val == 0 then
                     callback(true, output)
                 else
