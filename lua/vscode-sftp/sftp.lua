@@ -21,8 +21,7 @@ local function build_connection_string(context)
   end
   
   return string.format(
-    "%s://%s@%s:%d",
-    context.protocol,
+    "sftp://%s@%s:%d",
     context.username,
     context.host,
     context.port
@@ -48,11 +47,12 @@ function M.upload_current_file()
       local remote_file = context.remotePath .. "/" .. relative_path
       
       local cmd = string.format(
-        "lftp -c '%s open %s; put %s -o %s; quit'",
+        "lftp -u %s -e 'set sftp:auto-confirm yes; %s put %s -o %s; quit' %s",
+        context.username,
         auth,
-        conn_str,
         current_file,
-        remote_file
+        remote_file,
+        context.host
       )
 
       local result = vim.fn.system(cmd)
