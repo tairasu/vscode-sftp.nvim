@@ -14,12 +14,10 @@ local function build_connection_string(context)
   local auth = ""
   if context.privateKeyPath then
     auth = string.format("set sftp:connect-program 'ssh -a -x -i %s';", context.privateKeyPath)
-  elseif context.password then
-    auth = string.format("set sftp:password '%s';", context.password)
   else
     -- Prompt for password if not provided
-    local password = get_password("SFTP Password for " .. context.host .. ": ")
-    auth = string.format("set sftp:password '%s';", password)
+    local password = context.password or get_password("SFTP Password for " .. context.host .. ": ")
+    auth = string.format("set sftp:password \"%s\";", password)
   end
   
   return string.format(
@@ -50,11 +48,11 @@ function M.upload_current_file()
       local remote_file = context.remotePath .. "/" .. relative_path
       
       local cmd = string.format(
-        "lftp -e '%s put %s -o %s; quit' %s",
+        "lftp -c '%s open %s; put %s -o %s; quit'",
         auth,
+        conn_str,
         current_file,
-        remote_file,
-        conn_str
+        remote_file
       )
 
       local result = vim.fn.system(cmd)
