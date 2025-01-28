@@ -21,8 +21,9 @@ local function create_mkdir_commands(path)
     
     for _, part in ipairs(parts) do
         if part ~= '' then
-            current = current .. '/' .. part
-            table.insert(commands, 'mkdir ' .. vim.fn.shellescape(current))
+            current = (current == '') and part or current .. '/' .. part
+            -- Use -mkdir instead of mkdir to ignore errors if directory exists
+            table.insert(commands, '-mkdir ' .. vim.fn.shellescape(current))
         end
     end
     
@@ -88,12 +89,16 @@ local function execute_sftp_command(conf, command, callback)
     end
     
     -- Add remote directory change command at the start
-    local cd_cmd = "cd " .. vim.fn.shellescape(conf.remotePath) .. "\n"
-    f:write(cd_cmd)
+    -- Use -mkdir to create the remote path if it doesn't exist
+    local setup_cmds = string.format('-mkdir %s\ncd %s\n',
+        vim.fn.shellescape(conf.remotePath),
+        vim.fn.shellescape(conf.remotePath)
+    )
+    f:write(setup_cmds)
     f:write(command)
     f:close()
     
-    debug_log("Batch commands:\n" .. cd_cmd .. command, conf)
+    debug_log("Batch commands:\n" .. setup_cmds .. command, conf)
     
     -- Add the batch file argument
     table.insert(args, 1, "-b")  -- Insert at the beginning
@@ -110,8 +115,11 @@ local function execute_sftp_command(conf, command, callback)
         end,
         on_stderr = function(_, data)
             if data then
-                table.insert(errors, data)
-                debug_log("STDERR: " .. data, conf)
+                -- Filter out "Couldn't create directory" messages when using -mkdir
+                if not data:match("Couldn't create directory") then
+                    table.insert(errors, data)
+                    debug_log("STDERR: " .. data, conf)
+                end
             end
         end,
         on_exit = function(j, return_val)
@@ -120,7 +128,7 @@ local function execute_sftp_command(conf, command, callback)
                 -- Clean up temp file
                 os.remove(temp_script)
                 
-                if return_val == 0 then
+                if return_val == 0 or #errors == 0 then
                     callback(true, output)
                 else
                     -- Check for common error patterns
