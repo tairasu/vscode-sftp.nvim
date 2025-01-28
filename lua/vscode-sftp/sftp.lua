@@ -17,7 +17,8 @@ local function create_sftp_commands(conf)
     
     -- Add connection details
     if conf.privateKeyPath then
-        table.insert(commands, "-oIdentityFile=" .. vim.fn.expand(conf.privateKeyPath))
+        table.insert(commands, "-i")
+        table.insert(commands, vim.fn.expand(conf.privateKeyPath))
     end
     
     -- Add port if not default
@@ -26,7 +27,7 @@ local function create_sftp_commands(conf)
         table.insert(commands, tostring(conf.port))
     end
     
-    -- Add host
+    -- Add destination in the format username@host
     table.insert(commands, conf.username .. "@" .. conf.host)
     
     return commands
@@ -47,12 +48,15 @@ local function execute_sftp_command(conf, command, callback)
         end)
         return
     end
+    
+    -- Add remote directory change command at the start
+    f:write("cd " .. vim.fn.shellescape(conf.remotePath) .. "\n")
     f:write(command)
     f:close()
     
-    -- Add the script file to arguments
-    table.insert(args, "-b")
-    table.insert(args, temp_script)
+    -- Add the batch file argument
+    table.insert(args, 1, "-b")  -- Insert at the beginning
+    table.insert(args, 2, temp_script)
     
     local job = Job:new({
         command = 'sftp',
@@ -102,17 +106,17 @@ function M.upload_current_file()
     end
     
     local current_file = vim.fn.expand('%:p')
-    local remote_path = get_remote_path(conf, current_file)
+    local relative_path = Path:new(current_file):make_relative(vim.fn.getcwd())
     
-    -- Create remote directory structure
-    local remote_dir = vim.fn.fnamemodify(remote_path, ':h')
-    local mkdir_cmd = string.format('-mkdir %s\nput %s %s\n', 
+    -- Create remote directory structure and upload file
+    local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
+    local batch_cmd = string.format('mkdir -p %s\ncd %s\nput %s\n', 
         vim.fn.shellescape(remote_dir),
-        vim.fn.shellescape(current_file),
-        vim.fn.shellescape(remote_path)
+        vim.fn.shellescape(remote_dir),
+        vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t'))
     )
     
-    execute_sftp_command(conf, mkdir_cmd, function(success, output)
+    execute_sftp_command(conf, batch_cmd, function(success, output)
         if success then
             vim.notify(string.format('Uploaded %s', current_file), vim.log.levels.INFO)
         else
@@ -130,18 +134,21 @@ function M.download_current_file()
     end
     
     local current_file = vim.fn.expand('%:p')
-    local remote_path = get_remote_path(conf, current_file)
+    local relative_path = Path:new(current_file):make_relative(vim.fn.getcwd())
     
     -- Create local directory structure
     local local_dir = vim.fn.fnamemodify(current_file, ':h')
     vim.fn.mkdir(local_dir, 'p')
     
-    local get_cmd = string.format('get %s %s\n',
-        vim.fn.shellescape(remote_path),
+    -- Download file
+    local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
+    local batch_cmd = string.format('cd %s\nget %s %s\n',
+        vim.fn.shellescape(remote_dir),
+        vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t')),
         vim.fn.shellescape(current_file)
     )
     
-    execute_sftp_command(conf, get_cmd, function(success, output)
+    execute_sftp_command(conf, batch_cmd, function(success, output)
         if success then
             vim.notify(string.format('Downloaded %s', current_file), vim.log.levels.INFO)
             vim.cmd('e!') -- Reload the buffer
@@ -158,8 +165,6 @@ function M.sync_project()
         vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
         return
     end
-    
-    local workspace_root = vim.fn.getcwd()
     
     -- Create a list of files to sync
     local files = vim.fn.systemlist('git ls-files 2>/dev/null || find . -type f')
@@ -180,15 +185,18 @@ function M.sync_project()
         end
         
         if not skip then
-            local local_path = Path:new(workspace_root):joinpath(file).filename
-            local remote_path = get_remote_path(conf, local_path)
-            local remote_dir = vim.fn.fnamemodify(remote_path, ':h')
-            
-            batch_cmd = batch_cmd .. string.format('-mkdir %s\nput %s %s\n',
-                vim.fn.shellescape(remote_dir),
-                vim.fn.shellescape(local_path),
-                vim.fn.shellescape(remote_path)
-            )
+            local remote_dir = vim.fn.fnamemodify(file, ':h')
+            if remote_dir == '.' then
+                batch_cmd = batch_cmd .. string.format('put %s\n',
+                    vim.fn.shellescape(file)
+                )
+            else
+                batch_cmd = batch_cmd .. string.format('mkdir -p %s\ncd %s\nput %s\ncd ..\n',
+                    vim.fn.shellescape(remote_dir),
+                    vim.fn.shellescape(remote_dir),
+                    vim.fn.shellescape(vim.fn.fnamemodify(file, ':t'))
+                )
+            end
         end
     end
     
@@ -214,15 +222,19 @@ function M.delete_remote()
     end
     
     local current_file = vim.fn.expand('%:p')
-    local remote_path = get_remote_path(conf, current_file)
+    local relative_path = Path:new(current_file):make_relative(vim.fn.getcwd())
     
-    local rm_cmd = string.format('rm %s\n', vim.fn.shellescape(remote_path))
+    local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
+    local batch_cmd = string.format('cd %s\nrm %s\n',
+        vim.fn.shellescape(remote_dir),
+        vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t'))
+    )
     
-    execute_sftp_command(conf, rm_cmd, function(success, output)
+    execute_sftp_command(conf, batch_cmd, function(success, output)
         if success then
-            vim.notify(string.format('Deleted %s', remote_path), vim.log.levels.INFO)
+            vim.notify(string.format('Deleted %s', current_file), vim.log.levels.INFO)
         else
-            vim.notify(string.format('Failed to delete %s: %s', remote_path, table.concat(output, '\n')), vim.log.levels.ERROR)
+            vim.notify(string.format('Failed to delete %s: %s', current_file, table.concat(output, '\n')), vim.log.levels.ERROR)
         end
     end)
 end
