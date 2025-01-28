@@ -6,67 +6,146 @@ M.config = {
     debug = false,
 }
 
--- Add module loading verification
-local function verify_modules()
-  local modules = {
-    "vscode-sftp.config",
-    "vscode-sftp.sftp",
-    "plenary.async"
-  }
-  
-  for _, module in ipairs(modules) do
-    local ok, _ = pcall(require, module)
-    if not ok then
-      return false, "Failed to load module: " .. module
-    end
-  end
-  return true
-end
-
 -- Setup function to initialize the plugin
 function M.setup(opts)
     -- Merge user config with defaults
     M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
-    -- Load plugin components
-    require('vscode-sftp.config').setup()
-    require('vscode-sftp.commands').setup()
-    require('vscode-sftp.autocmds').setup()
+    -- Create the plugin augroup
+    local group = vim.api.nvim_create_augroup('VscodeSFTP', { clear = true })
 
-    -- Verify all required modules are loaded
-    local modules_ok, err = verify_modules()
-    if not modules_ok then
-      vim.notify(err, vim.log.levels.ERROR)
-      return
-    end
+    -- Initialize components
+    local config = require('vscode-sftp.config')
+    local sftp = require('vscode-sftp.sftp')
 
-    local ok, err = pcall(function()
-      vim.notify("vscode-sftp.nvim loaded successfully!", vim.log.levels.INFO)
-      
-      -- Initialize the autocmd for upload on save
-      vim.api.nvim_create_autocmd("BufWritePost", {
-        pattern = "*",
+    -- Setup auto upload on save
+    vim.api.nvim_create_autocmd('BufWritePost', {
+        group = group,
+        pattern = '*',
         callback = function()
-          -- Only upload if config exists
-          if require("vscode-sftp.config").find_config() then
-            require("vscode-sftp.sftp").upload_current_file()
-          end
-        end,
-      })
+            -- Check if auto upload is enabled globally
+            if not M.config.auto_upload then
+                return
+            end
+            
+            -- Get SFTP config for current file
+            local conf = config.find_config()
+            if not conf then
+                return
+            end
+            
+            -- Check if uploadOnSave is enabled in the config
+            if conf.uploadOnSave == false then
+                return
+            end
+            
+            -- Get the current file path relative to the workspace root
+            local current_file = vim.fn.expand('%:p')
+            
+            -- Check if file is in ignore list
+            if conf.ignore then
+                for _, pattern in ipairs(conf.ignore) do
+                    if current_file:match(pattern) then
+                        return
+                    end
+                end
+            end
+            
+            -- Upload the file
+            sftp.upload_current_file()
+        end
+    })
 
-      -- Add commands
-      vim.api.nvim_create_user_command("SFTPUpload", function()
-        require("vscode-sftp.sftp").upload_current_file()
-      end, {})
-
-      vim.api.nvim_create_user_command("SFTPDownload", function()
-        require("vscode-sftp.sftp").download_file()
-      end, {})
-    end)
+    -- Create user commands
+    vim.api.nvim_create_user_command('SFTPUpload', function()
+        local conf = config.find_config()
+        if not conf then
+            vim.notify('No sftp.json configuration found', vim.log.levels.ERROR)
+            return
+        end
+        sftp.upload_current_file()
+    end, {})
     
-    if not ok then
-      vim.notify("Failed to setup vscode-sftp.nvim: " .. tostring(err), vim.log.levels.ERROR)
-    end
+    vim.api.nvim_create_user_command('SFTPDownload', function()
+        local conf = config.find_config()
+        if not conf then
+            vim.notify('No sftp.json configuration found', vim.log.levels.ERROR)
+            return
+        end
+        sftp.download_current_file()
+    end, {})
+    
+    vim.api.nvim_create_user_command('SFTPSync', function()
+        local conf = config.find_config()
+        if not conf then
+            vim.notify('No sftp.json configuration found', vim.log.levels.ERROR)
+            return
+        end
+        sftp.sync_project()
+    end, {})
+    
+    vim.api.nvim_create_user_command('SFTPInit', function()
+        -- Create .vscode directory if it doesn't exist
+        local vscode_dir = '.vscode'
+        if vim.fn.isdirectory(vscode_dir) == 0 then
+            vim.fn.mkdir(vscode_dir, 'p')
+        end
+        
+        -- Write the template to sftp.json
+        local config_path = vscode_dir .. '/sftp.json'
+        if vim.fn.filereadable(config_path) == 1 then
+            vim.notify('sftp.json already exists!', vim.log.levels.WARN)
+            return
+        end
+        
+        local template = {
+            name = "My Server",
+            host = "hostname",
+            protocol = "sftp",
+            port = 22,
+            username = "username",
+            remotePath = "/path/to/remote/project",
+            uploadOnSave = true,
+            ignore = {
+                ".vscode",
+                ".git",
+                ".DS_Store",
+                "node_modules",
+                "dist"
+            }
+        }
+        
+        local f = io.open(config_path, 'w')
+        if not f then
+            vim.notify('Failed to create sftp.json', vim.log.levels.ERROR)
+            return
+        end
+        
+        f:write(vim.fn.json_encode(template))
+        f:close()
+        
+        vim.notify('Created sftp.json template', vim.log.levels.INFO)
+    end, {})
+    
+    vim.api.nvim_create_user_command('SFTPDelete', function()
+        local conf = config.find_config()
+        if not conf then
+            vim.notify('No sftp.json configuration found', vim.log.levels.ERROR)
+            return
+        end
+        sftp.delete_remote()
+    end, {})
+
+    -- Setup config watcher
+    vim.api.nvim_create_autocmd({"BufWritePost"}, {
+        group = group,
+        pattern = "**/.vscode/sftp.json",
+        callback = function()
+            config.clear_cache()
+        end
+    })
+
+    vim.notify("vscode-sftp.nvim loaded successfully!", vim.log.levels.INFO)
 end
 
 return M

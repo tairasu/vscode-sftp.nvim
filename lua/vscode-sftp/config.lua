@@ -21,6 +21,11 @@ local default_config = {
 -- Cache for loaded configurations
 local config_cache = {}
 
+-- Clear the configuration cache
+function M.clear_cache()
+    config_cache = {}
+end
+
 -- Validate configuration
 local function validate_config(config)
     if not config.host or config.host == "" then
