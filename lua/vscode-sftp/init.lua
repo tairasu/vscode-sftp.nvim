@@ -2,9 +2,27 @@ local M = {}
 
 -- Default configuration
 M.config = {
-    auto_upload = true,
+    auto_upload = true,  -- Global setting to enable/disable auto upload
     debug = false,
 }
+
+-- Helper function to check if a file should be ignored
+local function should_ignore_file(file_path, ignore_patterns)
+    if not ignore_patterns then
+        return false
+    end
+    
+    for _, pattern in ipairs(ignore_patterns) do
+        -- Convert glob pattern to Lua pattern
+        local lua_pattern = pattern:gsub("%.", "%%.")  -- Escape dots
+                                 :gsub("%*", ".*")     -- Convert * to .*
+                                 :gsub("%?", ".")      -- Convert ? to .
+        if file_path:match(lua_pattern) then
+            return true
+        end
+    end
+    return false
+end
 
 -- Setup function to initialize the plugin
 function M.setup(opts)
@@ -39,16 +57,16 @@ function M.setup(opts)
                 return
             end
             
-            -- Get the current file path relative to the workspace root
+            -- Get the current file path
             local current_file = vim.fn.expand('%:p')
+            local relative_path = vim.fn.fnamemodify(current_file, ':.:')
             
             -- Check if file is in ignore list
-            if conf.ignore then
-                for _, pattern in ipairs(conf.ignore) do
-                    if current_file:match(pattern) then
-                        return
-                    end
+            if should_ignore_file(relative_path, conf.ignore) then
+                if M.config.debug then
+                    vim.notify(string.format('Skipping ignored file: %s', relative_path), vim.log.levels.DEBUG)
                 end
+                return
             end
             
             -- Upload the file
