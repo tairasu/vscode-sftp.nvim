@@ -56,11 +56,18 @@ function M.upload_current_file()
         remote_file
       )
 
-      local success, result = async.util.system(cmd, { timeout = 10000 })
-      if not success then
-        vim.notify("Upload failed: " .. (result or "timeout"), vim.log.levels.ERROR)
-      else
-        vim.notify("Uploaded to " .. (context.name or context.host), vim.log.levels.INFO)
+      local handle = vim.fn.jobstart(cmd, {
+        on_exit = function(_, code, _)
+          if code == 0 then
+            vim.notify("Uploaded to " .. (context.name or context.host), vim.log.levels.INFO)
+          else
+            vim.notify("Upload failed with code " .. code, vim.log.levels.ERROR)
+          end
+        end
+      })
+      
+      if handle == 0 or handle == -1 then
+        vim.notify("Failed to start upload job", vim.log.levels.ERROR)
       end
     end)()
   end
