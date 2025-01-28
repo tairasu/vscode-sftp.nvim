@@ -11,7 +11,10 @@ vim.api.nvim_create_autocmd("BufWritePost", {
 })
 
 -- Add commands
-vim.api.nvim_create_user_command("SFTPUpload", sftp.upload_current_file, {})
-vim.api.nvim_create_user_command("SFTPDownload", function() 
-  -- Implement download logic
+vim.api.nvim_create_user_command("SFTPUpload", function()
+  require("vscode-sftp.sftp").upload_current_file()
+end, {})
+
+vim.api.nvim_create_user_command("SFTPDownload", function()
+  require("vscode-sftp.sftp").download_file()
 end, {})
