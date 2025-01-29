@@ -1,5 +1,8 @@
 # vscode-sftp.nvim
 
+> [!NOTE]  
+> Very early development. Expect some things to not work.
+
 A Neovim plugin that brings VS Code's SFTP functionality to Neovim. This plugin allows you to automatically sync your local workspace with a remote server through SFTP/FTP.
 
 ## Features
