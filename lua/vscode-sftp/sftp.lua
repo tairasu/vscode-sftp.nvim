@@ -329,7 +329,7 @@ local function add_download_command(file)
     return cmd
 end
 
--- Download a file from remote
+-- Download a file from remote with selection
 function M.download_current_file()
     local conf = config.find_config()
     if not conf then
@@ -338,22 +338,82 @@ function M.download_current_file()
     end
     
     local current_file = vim.fn.expand('%:p')
-    local relative_path = Path:new(current_file):make_relative(vim.fn.getcwd())
+    local current_dir = vim.fn.fnamemodify(current_file, ':h')
+    local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
     
-    -- Create local directory structure
-    local local_dir = vim.fn.fnamemodify(current_file, ':h')
-    vim.fn.mkdir(local_dir, 'p')
-    
-    -- Download file
-    local batch_cmd = add_download_command(relative_path)
-    
-    execute_sftp_command(conf, batch_cmd, function(success, output)
-        if success then
-            vim.notify(string.format('Downloaded %s', current_file), vim.log.levels.INFO)
-            vim.cmd('e!') -- Reload the buffer
-        else
-            vim.notify(string.format('Failed to download %s: %s', current_file, table.concat(output, '\n')), vim.log.levels.ERROR)
+    -- Get remote file listing
+    get_remote_file_list(conf, function(remote_listing)
+        if not remote_listing then
+            vim.notify("Failed to retrieve remote file list", vim.log.levels.ERROR)
+            return
         end
+        
+        -- Collect available files in current directory
+        local available_files = {}
+        for remote_file, info in pairs(remote_listing) do
+            if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
+                local relative_file = remote_file:sub(#conf.remotePath + 2)
+                local file_dir = vim.fn.fnamemodify(relative_file, ':h')
+                
+                -- Check if file is in current directory
+                if file_dir == relative_dir then
+                    table.insert(available_files, {
+                        name = vim.fn.fnamemodify(relative_file, ':t'),
+                        path = relative_file,
+                        info = info
+                    })
+                end
+            end
+        end
+        
+        if #available_files == 0 then
+            vim.notify("No files found in remote directory", vim.log.levels.ERROR)
+            return
+        end
+        
+        -- Sort files by name
+        table.sort(available_files, function(a, b) return a.name < b.name end)
+        
+        -- Create selection items with file info
+        local items = {}
+        for _, file in ipairs(available_files) do
+            table.insert(items, string.format("%s (%s, %d bytes)",
+                file.name,
+                format_timestamp(file.info.mtime),
+                file.info.size
+            ))
+        end
+        
+        -- Show file selection
+        vim.ui.select(items, {
+            prompt = "Select file to download:",
+            format_item = function(item) return item end
+        }, function(choice, idx)
+            if not choice then
+                vim.notify("Download cancelled", vim.log.levels.INFO)
+                return
+            end
+            
+            local file = available_files[idx]
+            local local_path = file.path
+            
+            -- Create local directory structure
+            vim.fn.mkdir(vim.fn.fnamemodify(local_path, ':h'), 'p')
+            
+            -- Download file
+            local batch_cmd = add_download_command(file.path)
+            execute_sftp_command(conf, batch_cmd, function(success, output)
+                if success then
+                    vim.notify(string.format('Downloaded %s', file.path), vim.log.levels.INFO)
+                    -- Reload buffer if we downloaded the current file
+                    if file.path == vim.fn.expand('%:p') then
+                        vim.cmd('e!')
+                    end
+                else
+                    vim.notify(string.format('Failed to download %s: %s', file.path, table.concat(output, '\n')), vim.log.levels.ERROR)
+                end
+            end)
+        end)
     end)
 end
 
@@ -417,11 +477,21 @@ function M.download_directory()
     local current_dir = vim.fn.fnamemodify(current_file, ':h')
     local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
     
+    -- Debug output
+    if conf.debug then
+        vim.notify(string.format("Current dir: %s\nRelative dir: %s", current_dir, relative_dir), vim.log.levels.DEBUG)
+    end
+    
     -- First, get remote file listing
     get_remote_file_list(conf, function(remote_listing)
         if not remote_listing then
             vim.notify("Failed to retrieve remote file list", vim.log.levels.ERROR)
             return
+        end
+        
+        -- Debug output
+        if conf.debug then
+            vim.notify("Remote files found: " .. vim.inspect(remote_listing), vim.log.levels.DEBUG)
         end
         
         -- Collect files to download
@@ -433,8 +503,13 @@ function M.download_directory()
                 local relative_file = remote_file:sub(#conf.remotePath + 2)
                 local file_dir = vim.fn.fnamemodify(relative_file, ':h')
                 
+                -- Debug output
+                if conf.debug then
+                    vim.notify(string.format("Checking file: %s (dir: %s)", relative_file, file_dir), vim.log.levels.DEBUG)
+                end
+                
                 -- Check if file is in current directory
-                if file_dir == relative_dir then
+                if file_dir == relative_dir or (file_dir == '.' and relative_dir == '') then
                     local local_path = relative_file
                     local local_mtime = vim.fn.getftime(local_path)
                     local local_size = vim.fn.getfsize(local_path)
