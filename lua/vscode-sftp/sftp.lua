@@ -4,6 +4,8 @@ local config = require('vscode-sftp.config')
 local Job = require('plenary.job')
 local Path = require('plenary.path')
 
+local execute_sftp_command -- forward declaration
+
 -- Debug logging function
 local function debug_log(msg, conf)
     if conf and conf.debug then
@@ -132,7 +134,7 @@ local function get_remote_file_list(conf, callback)
 end
 
 -- Execute SFTP command with password support
-local function execute_sftp_command(conf, command, callback)
+execute_sftp_command = function(conf, command, callback)
     local args = create_sftp_commands(conf)
     local output = {}
     local errors = {}
