@@ -306,6 +306,29 @@ function M.upload_current_file()
     end)
 end
 
+-- Helper: Build batch command to download a given file
+local function add_download_command(file)
+    local remote_dir = vim.fn.fnamemodify(file, ':h')
+    local local_path = file
+    local cmd = ""
+    
+    -- Create local directory if needed
+    vim.fn.mkdir(vim.fn.fnamemodify(local_path, ':h'), 'p')
+    
+    if remote_dir == '.' or remote_dir == '' then
+        cmd = string.format("get %s %s\n",
+            vim.fn.shellescape(vim.fn.fnamemodify(file, ':t')),
+            vim.fn.shellescape(local_path))
+    else
+        cmd = string.format("cd %s\nget %s %s\ncd ..\n",
+            vim.fn.shellescape(remote_dir),
+            vim.fn.shellescape(vim.fn.fnamemodify(file, ':t')),
+            vim.fn.shellescape(local_path)
+        )
+    end
+    return cmd
+end
+
 -- Download a file from remote
 function M.download_current_file()
     local conf = config.find_config()
@@ -322,12 +345,7 @@ function M.download_current_file()
     vim.fn.mkdir(local_dir, 'p')
     
     -- Download file
-    local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
-    local batch_cmd = string.format('cd %s\nget %s %s\n',
-        vim.fn.shellescape(remote_dir),
-        vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t')),
-        vim.fn.shellescape(current_file)
-    )
+    local batch_cmd = add_download_command(relative_path)
     
     execute_sftp_command(conf, batch_cmd, function(success, output)
         if success then
@@ -351,23 +369,6 @@ local function add_upload_command(file)
                 vim.fn.shellescape(remote_dir),
                 vim.fn.shellescape(vim.fn.fnamemodify(file, ':t'))
               )
-    end
-    return cmd
-end
-
--- Helper: Build batch command to download a given file
-local function add_download_command(file)
-    local remote_dir = vim.fn.fnamemodify(file, ':h')
-    local cmd = ""
-    if remote_dir == '.' or remote_dir == '' then
-        cmd = string.format("get %s %s\n",
-            vim.fn.shellescape(file), vim.fn.shellescape(file))
-    else
-        cmd = string.format("cd %s\nget %s %s\ncd ..\n",
-            vim.fn.shellescape(remote_dir),
-            vim.fn.shellescape(vim.fn.fnamemodify(file, ':t')),
-            vim.fn.shellescape(file)
-        )
     end
     return cmd
 end
@@ -434,7 +435,7 @@ function M.download_directory()
                 
                 -- Check if file is in current directory
                 if file_dir == relative_dir then
-                    local local_path = Path:new(current_dir):joinpath(vim.fn.fnamemodify(relative_file, ':t')).filename
+                    local local_path = relative_file
                     local local_mtime = vim.fn.getftime(local_path)
                     local local_size = vim.fn.getfsize(local_path)
                     
@@ -487,6 +488,10 @@ function M.download_directory()
                 execute_sftp_command(conf, batch_cmd, function(success, output)
                     if success then
                         vim.notify(string.format('Downloaded %s', file.remote_file), vim.log.levels.INFO)
+                        -- Reload buffer if the current file was downloaded
+                        if file.remote_file == vim.fn.expand('%:p') then
+                            vim.cmd('e!')
+                        end
                     else
                         vim.notify(string.format('Failed to download %s: %s',
                             file.remote_file, table.concat(output, '\n')), vim.log.levels.ERROR)
