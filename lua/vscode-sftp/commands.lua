@@ -292,7 +292,7 @@ function M.upload_directory()
   end)
 end
 
--- Delete remote file
+-- Delete remote and local file
 function M.delete_remote()
   local conf = config.find_config()
   if not conf then
@@ -300,21 +300,78 @@ function M.delete_remote()
     return
   end
 
-  local current_file = vim.fn.expand('%:p')
-  local relative_path = Path:new(current_file):make_relative(vim.fn.getcwd())
-  local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
+  local current_dir = vim.fn.expand('%:p:h')
+  -- Get all files in current directory
+  local local_files = vim.fn.systemlist(string.format("find '%s' -type f -maxdepth 1", current_dir))
   
-  local batch_cmd = string.format('cd %s\nrm %s\n',
-    vim.fn.shellescape(remote_dir),
-    vim.fn.shellescape(vim.fn.fnamemodify(current_file, ':t'))
-  )
+  if #local_files == 0 then
+    ui.show_info("No files found in current directory")
+    return
+  end
 
-  sftp.execute_command(conf, batch_cmd, function(success, output)
-    if success then
-      ui.show_success(string.format('Deleted %s', current_file))
-    else
-      ui.show_error(string.format('Failed to delete %s: %s', current_file, table.concat(output, '\n')))
+  -- Format files for selection
+  local items = {}
+  for _, file_path in ipairs(local_files) do
+    local file = {
+      name = vim.fn.fnamemodify(file_path, ':t'),
+      path = file_path,
+      relative_path = Path:new(file_path):make_relative(vim.fn.getcwd()),
+      local_mtime = vim.fn.getftime(file_path),
+      local_size = vim.fn.getfsize(file_path),
+      info = {
+        mtime = vim.fn.getftime(file_path),
+        size = vim.fn.getfsize(file_path)
+      }
+    }
+    table.insert(items, ui.format_list_item(file))
+  end
+
+  -- Show file selection dialog
+  vim.ui.select(items, ui.create_select_opts("Select file to delete:"), function(_, idx)
+    if not idx then
+      ui.show_info("Delete cancelled")
+      return
     end
+
+    local file = local_files[idx]
+    local relative_path = Path:new(file):make_relative(vim.fn.getcwd())
+
+    -- Show confirmation dialog
+    vim.ui.select({'Yes', 'No'}, {
+      prompt = string.format("Are you sure you want to delete '%s' (locally and remotely)?", relative_path),
+      default = 'No'
+    }, function(choice)
+      if choice ~= 'Yes' then
+        ui.show_info("Delete cancelled")
+        return
+      end
+
+      -- Delete remote file
+      local remote_dir = vim.fn.fnamemodify(relative_path, ':h')
+      local batch_cmd = string.format('cd %s\nrm %s\n',
+        vim.fn.shellescape(remote_dir),
+        vim.fn.shellescape(vim.fn.fnamemodify(file, ':t'))
+      )
+
+      sftp.execute_command(conf, batch_cmd, function(success, output)
+        if success then
+          -- Delete local file
+          local ok, err = os.remove(file)
+          if ok then
+            ui.show_success(string.format('Deleted %s (locally and remotely)', relative_path))
+            -- Reload buffer if currently open
+            if vim.fn.expand('%:p') == file then
+              vim.cmd('e!')
+            end
+          else
+            ui.show_error(string.format('Failed to delete local file %s: %s', relative_path, err))
+          end
+        else
+          ui.show_error(string.format('Failed to delete remote file %s: %s', 
+            relative_path, table.concat(output, '\n')))
+        end
+      end)
+    end)
   end)
 end
 
