@@ -215,81 +215,27 @@ function M.upload_directory()
     return
   end
 
-  local current_file = vim.fn.expand('%:p')
-  local current_dir = vim.fn.fnamemodify(current_file, ':h')
-  local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
-
-  local local_files = vim.fn.systemlist(string.format("find '%s' -type f -maxdepth 1", current_dir))
-  if #local_files == 0 then
-    ui.show_info("No files found in current directory")
+  -- Get files to upload
+  local files = sftp.get_files_to_upload(conf)
+  if #files == 0 then
+    ui.show_info("No files found to upload")
     return
   end
 
-  sftp.get_remote_listing(conf, function(remote_listing)
-    if not remote_listing then
-      ui.show_error("Failed to retrieve remote file list")
-      return
+  -- Format items for selection
+  local items = {}
+  local total_size = 0
+  for _, file in ipairs(files) do
+    table.insert(items, ui.format_list_item(file))
+    total_size = total_size + file.local_size
+  end
+
+  -- Show selection with clear header text
+  local header_text = string.format("%d files found to upload", #files)
+  vim.ui.select(items, ui.create_select_opts(header_text), function(_, _)
+    if vim.ui.confirm(ui.format_confirmation_prompt(#files), "Yes\nNo") == 1 then
+      sftp.upload_files(conf, files)
     end
-
-    local files_to_upload = {}
-    local total_upload_size = 0
-
-    for _, local_path in ipairs(local_files) do
-      local relative_path = Path:new(local_path):make_relative(vim.fn.getcwd())
-      local remote_key = conf.remotePath .. "/" .. relative_path
-      local local_mtime = vim.fn.getftime(local_path)
-      local local_size = vim.fn.getfsize(local_path)
-      local remote_info = remote_listing[remote_key]
-
-      if not remote_info or local_mtime > remote_info.mtime then
-        table.insert(files_to_upload, {
-          name = vim.fn.fnamemodify(local_path, ':t'),
-          local_path = local_path,
-          relative_path = relative_path,
-          local_mtime = local_mtime,
-          local_size = local_size,
-          info = remote_info or { mtime = 0, size = 0 }
-        })
-        total_upload_size = total_upload_size + local_size
-      end
-    end
-
-    if #files_to_upload == 0 then
-      ui.show_info("No files to upload in current directory")
-      return
-    end
-
-    -- Show file list for review
-    local items = {}
-    for _, file in ipairs(files_to_upload) do
-      table.insert(items, ui.format_list_item(file))
-    end
-
-    local header = ui.create_summary_header(#files_to_upload, total_upload_size)
-
-    vim.ui.select(items, ui.create_select_opts(header), function(_, _)
-      vim.ui.select({'Yes', 'No'}, {
-        prompt = ui.format_confirmation_prompt(#files_to_upload),
-        default = 'No'
-      }, function(choice)
-        if choice ~= 'Yes' then
-          ui.show_info("Upload cancelled")
-          return
-        end
-
-        for _, file in ipairs(files_to_upload) do
-          local batch_cmd = utils.create_upload_command(file.relative_path)
-          sftp.execute_command(conf, batch_cmd, function(success, output)
-            if success then
-              ui.show_success(string.format('Uploaded %s', file.relative_path))
-            else
-              ui.show_error(string.format('Failed to upload %s: %s',
-                file.relative_path, table.concat(output, '\n')))
-            end
-          end)
-        end
-      end)
-    end)
   end)
 end
 
