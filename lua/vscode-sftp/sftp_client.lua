@@ -214,4 +214,45 @@ function M.test_connection(conf, callback)
   end)
 end
 
-return M 
+-- Get files that need to be uploaded
+function M.get_files_to_upload()
+  local current_dir = vim.fn.expand('%:p:h')
+  local files = {}
+
+  -- Get all files in current directory
+  local local_files = vim.fn.systemlist(string.format("find '%s' -type f -maxdepth 1", current_dir))
+  
+  for _, file_path in ipairs(local_files) do
+    local file = {
+      name = vim.fn.fnamemodify(file_path, ':t'),
+      path = file_path,
+      relative_path = Path:new(file_path):make_relative(vim.fn.getcwd()),
+      local_mtime = vim.fn.getftime(file_path),
+      local_size = vim.fn.getfsize(file_path),
+      info = {
+        mtime = vim.fn.getftime(file_path),
+        size = vim.fn.getfsize(file_path)
+      }
+    }
+    table.insert(files, file)
+  end
+
+  return files
+end
+
+-- Upload multiple files
+function M.upload_files(conf, files)
+  for _, file in ipairs(files) do
+    local batch_cmd = utils.create_upload_command(file.relative_path)
+    M.execute_command(conf, batch_cmd, function(success, output)
+      if success then
+        ui.show_success(string.format('Uploaded %s', file.relative_path))
+      else
+        ui.show_error(string.format('Failed to upload %s: %s', 
+          file.relative_path, table.concat(output, '\n')))
+      end
+    end)
+  end
+end
+
+return M
