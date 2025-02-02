@@ -376,14 +376,13 @@ end
 function M.sync_project()
     local conf = config.find_config()
     if not conf then
-        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        vim.notify("No SFTP configuration found", vim.log.levels.ERROR)
         return
     end
 
-    -- Get local file list from git (or fall back to find)
-    local files = vim.fn.systemlist('git ls-files 2>/dev/null || find . -type f')
+    -- Get the local file list from git (or fall back to find)
+    local files = vim.fn.systemlist("git ls-files 2>/dev/null || find . -type f")
     local filtered_files = {}
-
     for _, file in ipairs(files) do
         local skip = false
         if conf.ignore then
@@ -405,47 +404,62 @@ function M.sync_project()
             return
         end
 
-        local upload_batch = ""
-        local download_batch = ""
+        local newest_transfer = nil  -- will hold { type = "upload" or "download", file = <relative file path> }
+        local newest_mtime = 0
 
-        -- Compare local files against remote listings
+        -- Compare local files against their corresponding remote files.
         for _, file in ipairs(filtered_files) do
             local local_mtime = vim.fn.getftime(file)
-            local remote_entry = remote_listing[file]
+            -- Construct the remote key (remote_listing keys are built starting at conf.remotePath)
+            local remote_key = conf.remotePath .. "/" .. file
+            local remote_entry = remote_listing[remote_key]
             if remote_entry then
                 local remote_mtime = remote_entry.mtime or 0
-                if local_mtime > remote_mtime then
-                    -- Local is newer: upload it
-                    upload_batch = upload_batch .. add_upload_command(file)
-                elseif remote_mtime > local_mtime then
-                    -- Remote is newer: prepare to download.
-                    vim.fn.mkdir(vim.fn.fnamemodify(file, ':h'), 'p')
-                    download_batch = download_batch .. add_download_command(file)
+                if local_mtime > remote_mtime and local_mtime > newest_mtime then
+                    newest_mtime = local_mtime
+                    newest_transfer = { type = "upload", file = file }
+                elseif remote_mtime > local_mtime and remote_mtime > newest_mtime then
+                    newest_mtime = remote_mtime
+                    newest_transfer = { type = "download", file = file }
                 end
             else
-                -- File exists locally but not remotely: upload it.
-                upload_batch = upload_batch .. add_upload_command(file)
+                -- Remote file does not exist: upload it.
+                if local_mtime > newest_mtime then
+                    newest_mtime = local_mtime
+                    newest_transfer = { type = "upload", file = file }
+                end
             end
         end
 
-        -- Also, for remote files that do not exist locally, download them.
-        for remote_file, _ in pairs(remote_listing) do
-            if vim.fn.filereadable(remote_file) == 0 then
-                vim.fn.mkdir(vim.fn.fnamemodify(remote_file, ':h'), 'p')
-                download_batch = download_batch .. add_download_command(remote_file)
+        -- Also check for remote files that do not exist locally.
+        for remote_file, info in pairs(remote_listing) do
+            if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
+                local relative_file = remote_file:sub(#conf.remotePath + 2)
+                if vim.fn.filereadable(relative_file) == 0 then
+                    if info.mtime > newest_mtime then
+                        newest_mtime = info.mtime
+                        newest_transfer = { type = "download", file = relative_file }
+                    end
+                end
             end
         end
 
-        local full_batch = upload_batch .. "\n" .. download_batch
-
-        if full_batch == "" then
+        if not newest_transfer then
             vim.notify("Everything is already in sync", vim.log.levels.INFO)
             return
         end
 
+        local full_batch = ""
+        if newest_transfer.type == "upload" then
+            full_batch = add_upload_command(newest_transfer.file)
+        elseif newest_transfer.type == "download" then
+            vim.fn.mkdir(vim.fn.fnamemodify(newest_transfer.file, ":h"), "p")
+            full_batch = add_download_command(newest_transfer.file)
+        end
+
         execute_sftp_command(conf, full_batch, function(success, output)
             if success then
-                vim.notify("Bidirectional sync complete", vim.log.levels.INFO)
+                vim.notify("Synced: " .. newest_transfer.file, vim.log.levels.INFO)
             else
                 vim.notify("Sync failed: " .. table.concat(output, "\n"), vim.log.levels.ERROR)
             end
