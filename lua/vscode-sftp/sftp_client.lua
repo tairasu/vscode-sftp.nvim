@@ -1,6 +1,8 @@
 local M = {}
 local Job = require('plenary.job')
 local ui = require('vscode-sftp.ui')
+local Path = require('plenary.path')
+local utils = require('vscode-sftp.utils')
 
 -- Create SFTP batch commands with authentication options
 local function create_sftp_commands(conf)
