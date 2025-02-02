@@ -233,9 +233,17 @@ function M.upload_directory()
   -- Show selection with clear header text
   local header_text = string.format("%d files found to upload", #files)
   vim.ui.select(items, ui.create_select_opts(header_text), function(_, _)
-    if vim.ui.confirm(ui.format_confirmation_prompt(#files), "Yes\nNo") == 1 then
-      sftp.upload_files(conf, files)
-    end
+    -- Use vim.ui.select for confirmation instead of vim.ui.confirm
+    vim.ui.select({'Yes', 'No'}, {
+      prompt = ui.format_confirmation_prompt(#files),
+      default = 'No'
+    }, function(choice)
+      if choice == 'Yes' then
+        sftp.upload_files(conf, files)
+      else
+        ui.show_info("Upload cancelled")
+      end
+    end)
   end)
 end
 
