@@ -151,20 +151,22 @@ execute_sftp_command = function(conf, command, callback)
         return
     end
     
-    -- Add remote directory change command at the start
-    -- First ensure the remote path exists
+    -- Add remote directory change command at the start:
+    -- Ensure that the remote path exists and change directory to it.
     local setup_cmds = string.format('-mkdir %s\ncd %s\n',
         vim.fn.shellescape(conf.remotePath),
         vim.fn.shellescape(conf.remotePath)
     )
     f:write(setup_cmds)
     f:write(command)
+    -- Append a "quit" command to force exit and flush output.
+    f:write("quit\n")
     f:close()
     
-    debug_log("Batch commands:\n" .. setup_cmds .. command, conf)
+    debug_log("Batch commands:\n" .. setup_cmds .. command .. "quit\n", conf)
     
     -- Add the batch file argument
-    table.insert(args, 1, "-b")  -- Insert at the beginning
+    table.insert(args, 1, "-b")
     table.insert(args, 2, temp_script)
     
     local job = Job:new({
