@@ -95,7 +95,8 @@ local function walk_remote_dir(conf, dir, callback)
             return
         end
 
-        local entries = {}
+        local results = {}  -- will store file information
+        
         -- Parse each line that is not the prompt, blank, or a "total" line.
         for _, line in ipairs(output) do
             if conf.debug then
@@ -132,40 +133,27 @@ local function walk_remote_dir(conf, dir, callback)
                         vim.notify(string.format("[SFTP Debug] Found entry: %s (dir: %s)", name, is_dir), vim.log.levels.DEBUG)
                     end
 
-                    table.insert(entries, {
-                        name = name,
-                        is_dir = is_dir,
+                    -- Store file info in results with full path as key
+                    local full_path = dir .. "/" .. name
+                    results[full_path] = {
                         mtime = file_mtime,
-                        size = tonumber(size),
-                        path = dir .. "/" .. name
-                    })
+                        size = tonumber(size)
+                    }
+
+                    if conf.debug then
+                        vim.notify(string.format("[SFTP Debug] Added entry: %s (mtime: %s, size: %d)",
+                            full_path, os.date("%Y-%m-%d %H:%M:%S", file_mtime), tonumber(size)), vim.log.levels.DEBUG)
+                    end
                 end
             end
         end
 
-        local results = {}  -- will accumulate file information from this directory and its children.
-        local pending = 0   -- number of recursive calls still pending
-
-        local function finish()
-            if pending == 0 then
-                if conf.debug then
-                    vim.notify(string.format("[SFTP Debug] Directory listing complete for %s, found %d entries",
-                        dir, vim.tbl_count(results)), vim.log.levels.DEBUG)
-                end
-                callback(true, results)
-            end
+        if conf.debug then
+            vim.notify(string.format("[SFTP Debug] Directory listing complete for %s, found %d entries",
+                dir, vim.tbl_count(results)), vim.log.levels.DEBUG)
         end
-
-        -- Add the current directory's entries to results
-        for _, entry in ipairs(entries) do
-            results[entry.path] = { mtime = entry.mtime, size = entry.size }
-            if conf.debug then
-                vim.notify(string.format("[SFTP Debug] Added entry: %s (mtime: %s, size: %d)",
-                    entry.path, os.date("%Y-%m-%d %H:%M:%S", entry.mtime), entry.size), vim.log.levels.DEBUG)
-            end
-        end
-
-        finish()
+        
+        callback(true, results)
     end)
 end
 
