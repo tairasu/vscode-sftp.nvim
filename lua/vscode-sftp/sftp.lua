@@ -81,16 +81,9 @@ end
 local function walk_remote_dir(conf, dir, callback)
     -- Build a batch command that changes to the directory, lists its contents, then quits.
     local batch_cmd = string.format("cd %s\nls -l\nquit\n", vim.fn.shellescape(dir))
-
-    if conf.debug then
-        vim.notify(string.format("[SFTP Debug] Listing directory: %s", dir), vim.log.levels.DEBUG)
-    end
-
+    
     execute_sftp_command(conf, batch_cmd, function(success, output)
         if not success then
-            if conf.debug then
-                vim.notify("[SFTP Debug] Failed to list directory", vim.log.levels.DEBUG)
-            end
             callback(false, {})
             return
         end
@@ -99,20 +92,9 @@ local function walk_remote_dir(conf, dir, callback)
         
         -- Parse each line that is not the prompt, blank, or a "total" line.
         for _, line in ipairs(output) do
-            if conf.debug then
-                vim.notify(string.format("[SFTP Debug] Raw line: %s", line), vim.log.levels.DEBUG)
-            end
-
             if not line:match("^sftp>") and line ~= "" and not line:match("^total") then
-                -- Updated pattern to handle '?' in links field
                 local perm, links, user, group, size, month, day, time_or_year, name =
                     line:match("^(%S+)%s+([%d%?]+)%s+(%S+)%s+(%S+)%s+(%d+)%s+(%a+)%s+(%d+)%s+(%S+)%s+(.+)$")
-                
-                if conf.debug then
-                    vim.notify(string.format("[SFTP Debug] Parsed: perm=%s, links=%s, user=%s, group=%s, size=%s, month=%s, day=%s, time_or_year=%s, name=%s",
-                        perm or "nil", links or "nil", user or "nil", group or "nil", size or "nil", 
-                        month or "nil", day or "nil", time_or_year or "nil", name or "nil"), vim.log.levels.DEBUG)
-                end
 
                 if perm and name then
                     local months = { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
@@ -135,11 +117,6 @@ local function walk_remote_dir(conf, dir, callback)
                         min = tonumber(min) or 0,
                         sec = 0
                     })
-                    local is_dir = perm:sub(1,1) == "d"
-                    
-                    if conf.debug then
-                        vim.notify(string.format("[SFTP Debug] Found entry: %s (dir: %s)", name, is_dir), vim.log.levels.DEBUG)
-                    end
 
                     -- Store file info in results with full path as key
                     local full_path = dir .. "/" .. name
@@ -147,18 +124,8 @@ local function walk_remote_dir(conf, dir, callback)
                         mtime = file_mtime,
                         size = tonumber(size)
                     }
-
-                    if conf.debug then
-                        vim.notify(string.format("[SFTP Debug] Added entry: %s (mtime: %s, size: %d)",
-                            full_path, os.date("%Y-%m-%d %H:%M:%S", file_mtime), tonumber(size)), vim.log.levels.DEBUG)
-                    end
                 end
             end
-        end
-
-        if conf.debug then
-            vim.notify(string.format("[SFTP Debug] Directory listing complete for %s, found %d entries",
-                dir, vim.tbl_count(results)), vim.log.levels.DEBUG)
         end
         
         callback(true, results)
@@ -351,10 +318,6 @@ function M.download_current_file()
     local current_dir = vim.fn.fnamemodify(current_file, ':h')
     local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
     
-    if conf.debug then
-        vim.notify(string.format("[SFTP Debug] Current dir: %s\nRelative dir: %s", current_dir, relative_dir), vim.log.levels.DEBUG)
-    end
-    
     -- Get remote file listing
     get_remote_file_list(conf, function(remote_listing)
         if not remote_listing then
@@ -362,32 +325,15 @@ function M.download_current_file()
             return
         end
         
-        if conf.debug then
-            vim.notify("[SFTP Debug] Remote files found: " .. vim.inspect(remote_listing), vim.log.levels.DEBUG)
-        end
-        
         -- Collect available files in current directory
         local available_files = {}
         for remote_file, info in pairs(remote_listing) do
-            if conf.debug then
-                vim.notify(string.format("[SFTP Debug] Checking remote file: %s", remote_file), vim.log.levels.DEBUG)
-            end
-            
             if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
                 local relative_file = remote_file:sub(#conf.remotePath + 2)
                 local file_dir = vim.fn.fnamemodify(relative_file, ':h')
                 
-                if conf.debug then
-                    vim.notify(string.format("[SFTP Debug] Relative file: %s\nFile dir: %s\nComparing with: %s",
-                        relative_file, file_dir, relative_dir), vim.log.levels.DEBUG)
-                end
-                
                 -- Check if file is in current directory
                 if file_dir == relative_dir or (file_dir == '.' and relative_dir == '') then
-                    if conf.debug then
-                        vim.notify(string.format("[SFTP Debug] Found matching file: %s", relative_file), vim.log.levels.DEBUG)
-                    end
-                    
                     table.insert(available_files, {
                         name = vim.fn.fnamemodify(relative_file, ':t'),
                         path = relative_file,
@@ -508,21 +454,11 @@ function M.download_directory()
     local current_dir = vim.fn.fnamemodify(current_file, ':h')
     local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
     
-    -- Debug output
-    if conf.debug then
-        vim.notify(string.format("Current dir: %s\nRelative dir: %s", current_dir, relative_dir), vim.log.levels.DEBUG)
-    end
-    
     -- First, get remote file listing
     get_remote_file_list(conf, function(remote_listing)
         if not remote_listing then
             vim.notify("Failed to retrieve remote file list", vim.log.levels.ERROR)
             return
-        end
-        
-        -- Debug output
-        if conf.debug then
-            vim.notify("Remote files found: " .. vim.inspect(remote_listing), vim.log.levels.DEBUG)
         end
         
         -- Collect files to download
@@ -533,11 +469,6 @@ function M.download_directory()
             if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
                 local relative_file = remote_file:sub(#conf.remotePath + 2)
                 local file_dir = vim.fn.fnamemodify(relative_file, ':h')
-                
-                -- Debug output
-                if conf.debug then
-                    vim.notify(string.format("Checking file: %s (dir: %s)", relative_file, file_dir), vim.log.levels.DEBUG)
-                end
                 
                 -- Check if file is in current directory
                 if file_dir == relative_dir or (file_dir == '.' and relative_dir == '') then
@@ -565,17 +496,24 @@ function M.download_directory()
             return
         end
         
+        -- Sort files by name
+        table.sort(files_to_download, function(a, b) 
+            return vim.fn.fnamemodify(a.remote_file, ':t') < vim.fn.fnamemodify(b.remote_file, ':t')
+        end)
+        
         -- Build summary message
-        local summary = string.format("Will download %d files (total %d bytes) to %s:\n",
+        local summary = string.format("The following %d files will be downloaded (total %d bytes) to %s:\n\n",
             #files_to_download, total_download_size, relative_dir)
+        
         for _, file in ipairs(files_to_download) do
-            summary = summary .. get_file_info_string(
-                vim.fn.fnamemodify(file.remote_file, ':t'),
-                file.local_mtime,
-                file.local_size,
-                file.info.mtime,
-                file.info.size
-            ) .. "\n"
+            local filename = vim.fn.fnamemodify(file.remote_file, ':t')
+            summary = summary .. string.format("  • %s\n    Remote: %s (%d bytes)\n    Local: %s (%d bytes)\n\n",
+                filename,
+                format_timestamp(file.info.mtime),
+                file.info.size,
+                file.local_mtime == 0 and "Not found" or format_timestamp(file.local_mtime),
+                file.local_size
+            )
         end
         
         -- Ask for confirmation
