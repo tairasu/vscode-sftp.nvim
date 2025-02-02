@@ -1,2 +1,15 @@
 .vscode
 .DS_Store
+
+-- Create options for vim.ui.select
+function M.create_select_opts(prompt)
+  return {
+    prompt = prompt,
+    format_item = function(item)
+      if type(item) == "table" then
+        return item.text
+      end
+      return item
+    end
+  }
+end

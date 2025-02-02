@@ -162,6 +162,19 @@ function M.show_file_list(files, total_size)
   end
 end
 
+-- Create options for vim.ui.select
+function M.create_select_opts(prompt)
+  return {
+    prompt = prompt,
+    format_item = function(item)
+      if type(item) == "table" then
+        return item.text
+      end
+      return item
+    end
+  }
+end
+
 -- Show error message
 function M.show_error(msg)
   vim.notify(msg, vim.log.levels.ERROR, { title = "File Browser Error" })
