@@ -75,6 +75,62 @@ local function create_sftp_commands(conf)
     return commands
 end
 
+-- Helper: Retrieve remote file listing using "ls -lR"
+local function get_remote_file_list(conf, callback)
+    local remote_files = {}
+    local batch_cmd = "ls -lR\n"
+    execute_sftp_command(conf, batch_cmd, function(success, output)
+        if not success then
+            callback(nil)
+            return
+        end
+
+        local current_dir = "."
+        for _, line in ipairs(output) do
+            if line:match(":$") then
+                -- Directory header line (e.g. "./subdir:" )
+                local dir = line:gsub(":$", "")
+                -- If the directory equals the remotePath then use '.' for relative paths
+                if dir == conf.remotePath then
+                    current_dir = "."
+                else
+                    -- remove any leading "./" if present
+                    current_dir = dir:gsub("^%./", "")
+                end
+            elseif line:match("^total") then
+                -- skip "total" lines
+            elseif line ~= "" then
+                -- Expect file lines in the ls -l format.
+                -- Typical output: "-rw-r--r--    1 user group  1234 Jan 01 12:34 filename"
+                local perm, links, user, group, size, month, day, time_or_year, filename =
+                    line:match("^(%S+)%s+(%d+)%s+(%S+)%s+(%S+)%s+(%d+)%s+(%a+)%s+(%d+)%s+(%S+)%s+(.+)$")
+                if perm and filename then
+                    local months = { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6, Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12 }
+                    local m = months[month] or 1
+                    local year, hour, min
+                    if time_or_year:find(":") then
+                        year = tonumber(os.date("%Y"))
+                        hour, min = time_or_year:match("^(%d+):(%d+)$")
+                    else
+                        year = tonumber(time_or_year)
+                        hour, min = 0, 0
+                    end
+                    day = tonumber(day) or 1
+                    local file_mtime = os.time({ year = year, month = m, day = day, hour = tonumber(hour) or 0, min = tonumber(min) or 0, sec = 0 })
+                    local relative_path
+                    if current_dir == "." then
+                        relative_path = filename
+                    else
+                        relative_path = current_dir .. "/" .. filename
+                    end
+                    remote_files[relative_path] = { mtime = file_mtime, size = tonumber(size) }
+                end
+            end
+        end
+        callback(remote_files)
+    end)
+end
+
 -- Execute SFTP command with password support
 local function execute_sftp_command(conf, command, callback)
     local args = create_sftp_commands(conf)
@@ -246,22 +302,52 @@ function M.download_current_file()
     end)
 end
 
--- Sync entire project
+-- Helper: Build batch command to upload a given file
+local function add_upload_command(file)
+    local remote_dir = vim.fn.fnamemodify(file, ':h')
+    local cmd = ""
+    if remote_dir == '.' or remote_dir == '' then
+        cmd = string.format("put %s\n", vim.fn.shellescape(file))
+    else
+        cmd = create_mkdir_commands(remote_dir) .. "\n" ..
+              string.format("cd %s\nput %s\ncd ..\n",
+                vim.fn.shellescape(remote_dir),
+                vim.fn.shellescape(vim.fn.fnamemodify(file, ':t'))
+              )
+    end
+    return cmd
+end
+
+-- Helper: Build batch command to download a given file
+local function add_download_command(file)
+    local remote_dir = vim.fn.fnamemodify(file, ':h')
+    local cmd = ""
+    if remote_dir == '.' or remote_dir == '' then
+        cmd = string.format("get %s %s\n",
+            vim.fn.shellescape(file), vim.fn.shellescape(file))
+    else
+        cmd = string.format("cd %s\nget %s %s\ncd ..\n",
+            vim.fn.shellescape(remote_dir),
+            vim.fn.shellescape(vim.fn.fnamemodify(file, ':t')),
+            vim.fn.shellescape(file)
+        )
+    end
+    return cmd
+end
+
+-- Sync entire project bidirectionally
 function M.sync_project()
     local conf = config.find_config()
     if not conf then
         vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
         return
     end
-    
-    -- Create a list of files to sync
+
+    -- Get local file list from git (or fall back to find)
     local files = vim.fn.systemlist('git ls-files 2>/dev/null || find . -type f')
-    local total = #files
-    
-    -- Create batch upload command
-    local batch_cmd = ''
+    local filtered_files = {}
+
     for _, file in ipairs(files) do
-        -- Skip ignored files
         local skip = false
         if conf.ignore then
             for _, pattern in ipairs(conf.ignore) do
@@ -271,36 +357,63 @@ function M.sync_project()
                 end
             end
         end
-        
         if not skip then
-            local remote_dir = vim.fn.fnamemodify(file, ':h')
-            if remote_dir == '.' then
-                batch_cmd = batch_cmd .. string.format('put %s\n',
-                    vim.fn.shellescape(file)
-                )
-            else
-                -- Add mkdir commands for directory structure
-                batch_cmd = batch_cmd .. create_mkdir_commands(remote_dir) .. '\n'
-                -- Add cd and put commands
-                batch_cmd = batch_cmd .. string.format('cd %s\nput %s\ncd ..\n',
-                    vim.fn.shellescape(remote_dir),
-                    vim.fn.shellescape(vim.fn.fnamemodify(file, ':t'))
-                )
-            end
+            table.insert(filtered_files, file)
         end
     end
-    
-    if batch_cmd ~= '' then
-        execute_sftp_command(conf, batch_cmd, function(success, output)
-            if success then
-                vim.notify(string.format('Sync complete: %d files uploaded', total), vim.log.levels.INFO)
+
+    get_remote_file_list(conf, function(remote_listing)
+        if not remote_listing then
+            vim.notify("Failed to retrieve remote file list", vim.log.levels.ERROR)
+            return
+        end
+
+        local upload_batch = ""
+        local download_batch = ""
+
+        -- Compare local files against remote listings
+        for _, file in ipairs(filtered_files) do
+            local local_mtime = vim.fn.getftime(file)
+            local remote_entry = remote_listing[file]
+            if remote_entry then
+                local remote_mtime = remote_entry.mtime or 0
+                if local_mtime > remote_mtime then
+                    -- Local is newer: upload it
+                    upload_batch = upload_batch .. add_upload_command(file)
+                elseif remote_mtime > local_mtime then
+                    -- Remote is newer: prepare to download.
+                    vim.fn.mkdir(vim.fn.fnamemodify(file, ':h'), 'p')
+                    download_batch = download_batch .. add_download_command(file)
+                end
             else
-                vim.notify(string.format('Sync failed: %s', table.concat(output, '\n')), vim.log.levels.ERROR)
+                -- File exists locally but not remotely: upload it.
+                upload_batch = upload_batch .. add_upload_command(file)
+            end
+        end
+
+        -- Also, for remote files that do not exist locally, download them.
+        for remote_file, _ in pairs(remote_listing) do
+            if vim.fn.filereadable(remote_file) == 0 then
+                vim.fn.mkdir(vim.fn.fnamemodify(remote_file, ':h'), 'p')
+                download_batch = download_batch .. add_download_command(remote_file)
+            end
+        end
+
+        local full_batch = upload_batch .. "\n" .. download_batch
+
+        if full_batch == "" then
+            vim.notify("Everything is already in sync", vim.log.levels.INFO)
+            return
+        end
+
+        execute_sftp_command(conf, full_batch, function(success, output)
+            if success then
+                vim.notify("Bidirectional sync complete", vim.log.levels.INFO)
+            else
+                vim.notify("Sync failed: " .. table.concat(output, "\n"), vim.log.levels.ERROR)
             end
         end)
-    else
-        vim.notify('No files to sync', vim.log.levels.INFO)
-    end
+    end)
 end
 
 -- Delete remote file/directory
