@@ -81,8 +81,16 @@ end
 local function walk_remote_dir(conf, dir, callback)
     -- Build a batch command that changes to the directory, lists its contents, then quits.
     local batch_cmd = string.format("cd %s\nls -l\nquit\n", vim.fn.shellescape(dir))
+
+    if conf.debug then
+        vim.notify(string.format("[SFTP Debug] Listing directory: %s", dir), vim.log.levels.DEBUG)
+    end
+
     execute_sftp_command(conf, batch_cmd, function(success, output)
         if not success then
+            if conf.debug then
+                vim.notify("[SFTP Debug] Failed to list directory", vim.log.levels.DEBUG)
+            end
             callback(false, {})
             return
         end
@@ -90,6 +98,10 @@ local function walk_remote_dir(conf, dir, callback)
         local entries = {}
         -- Parse each line that is not the prompt, blank, or a "total" line.
         for _, line in ipairs(output) do
+            if conf.debug then
+                vim.notify(string.format("[SFTP Debug] Raw line: %s", line), vim.log.levels.DEBUG)
+            end
+
             if not line:match("^sftp>") and line ~= "" and not line:match("^total") then
                 local perm, links, user, group, size, month, day, time_or_year, name =
                     line:match("^(%S+)%s+(%d+)%s+(%S+)%s+(%S+)%s+(%d+)%s+(%a+)%s+(%d+)%s+(%S+)%s+(.+)$")
@@ -115,6 +127,11 @@ local function walk_remote_dir(conf, dir, callback)
                         sec = 0
                     })
                     local is_dir = perm:sub(1,1) == "d"
+                    
+                    if conf.debug then
+                        vim.notify(string.format("[SFTP Debug] Found entry: %s (dir: %s)", name, is_dir), vim.log.levels.DEBUG)
+                    end
+
                     table.insert(entries, {
                         name = name,
                         is_dir = is_dir,
@@ -131,23 +148,20 @@ local function walk_remote_dir(conf, dir, callback)
 
         local function finish()
             if pending == 0 then
+                if conf.debug then
+                    vim.notify(string.format("[SFTP Debug] Directory listing complete for %s, found %d entries",
+                        dir, vim.tbl_count(results)), vim.log.levels.DEBUG)
+                end
                 callback(true, results)
             end
         end
 
-        -- Add the current directory's entries to results and, if the entry is a directory,
-        -- recursively walk it.
+        -- Add the current directory's entries to results
         for _, entry in ipairs(entries) do
             results[entry.path] = { mtime = entry.mtime, size = entry.size }
-            if entry.is_dir then
-                pending = pending + 1
-                walk_remote_dir(conf, entry.path, function(succ, sub_entries)
-                    for path, info in pairs(sub_entries) do
-                        results[path] = info
-                    end
-                    pending = pending - 1
-                    finish()
-                end)
+            if conf.debug then
+                vim.notify(string.format("[SFTP Debug] Added entry: %s (mtime: %s, size: %d)",
+                    entry.path, os.date("%Y-%m-%d %H:%M:%S", entry.mtime), entry.size), vim.log.levels.DEBUG)
             end
         end
 
@@ -341,6 +355,10 @@ function M.download_current_file()
     local current_dir = vim.fn.fnamemodify(current_file, ':h')
     local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
     
+    if conf.debug then
+        vim.notify(string.format("[SFTP Debug] Current dir: %s\nRelative dir: %s", current_dir, relative_dir), vim.log.levels.DEBUG)
+    end
+    
     -- Get remote file listing
     get_remote_file_list(conf, function(remote_listing)
         if not remote_listing then
@@ -348,15 +366,32 @@ function M.download_current_file()
             return
         end
         
+        if conf.debug then
+            vim.notify("[SFTP Debug] Remote files found: " .. vim.inspect(remote_listing), vim.log.levels.DEBUG)
+        end
+        
         -- Collect available files in current directory
         local available_files = {}
         for remote_file, info in pairs(remote_listing) do
+            if conf.debug then
+                vim.notify(string.format("[SFTP Debug] Checking remote file: %s", remote_file), vim.log.levels.DEBUG)
+            end
+            
             if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
                 local relative_file = remote_file:sub(#conf.remotePath + 2)
                 local file_dir = vim.fn.fnamemodify(relative_file, ':h')
                 
+                if conf.debug then
+                    vim.notify(string.format("[SFTP Debug] Relative file: %s\nFile dir: %s\nComparing with: %s",
+                        relative_file, file_dir, relative_dir), vim.log.levels.DEBUG)
+                end
+                
                 -- Check if file is in current directory
-                if file_dir == relative_dir then
+                if file_dir == relative_dir or (file_dir == '.' and relative_dir == '') then
+                    if conf.debug then
+                        vim.notify(string.format("[SFTP Debug] Found matching file: %s", relative_file), vim.log.levels.DEBUG)
+                    end
+                    
                     table.insert(available_files, {
                         name = vim.fn.fnamemodify(relative_file, ':t'),
                         path = relative_file,
