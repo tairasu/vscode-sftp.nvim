@@ -175,8 +175,9 @@ function M.download_directory()
     end
 
     local header = ui.create_summary_header(#files_to_download, total_download_size)
+    local header_text = string.format("%d files found to download", #files_to_download)
     
-    vim.ui.select(items, ui.create_select_opts(header), function(_, _)
+    vim.ui.select(items, ui.create_select_opts(header_text), function(_, _)
       -- After showing the list, ask for confirmation
       vim.ui.select({'Yes', 'No'}, {
         prompt = ui.format_confirmation_prompt(#files_to_download),
