@@ -104,8 +104,16 @@ local function walk_remote_dir(conf, dir, callback)
             end
 
             if not line:match("^sftp>") and line ~= "" and not line:match("^total") then
+                -- Updated pattern to handle '?' in links field
                 local perm, links, user, group, size, month, day, time_or_year, name =
-                    line:match("^(%S+)%s+(%d+)%s+(%S+)%s+(%S+)%s+(%d+)%s+(%a+)%s+(%d+)%s+(%S+)%s+(.+)$")
+                    line:match("^(%S+)%s+([%d%?]+)%s+(%S+)%s+(%S+)%s+(%d+)%s+(%a+)%s+(%d+)%s+(%S+)%s+(.+)$")
+                
+                if conf.debug then
+                    vim.notify(string.format("[SFTP Debug] Parsed: perm=%s, links=%s, user=%s, group=%s, size=%s, month=%s, day=%s, time_or_year=%s, name=%s",
+                        perm or "nil", links or "nil", user or "nil", group or "nil", size or "nil", 
+                        month or "nil", day or "nil", time_or_year or "nil", name or "nil"), vim.log.levels.DEBUG)
+                end
+
                 if perm and name then
                     local months = { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
                                      Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12 }
