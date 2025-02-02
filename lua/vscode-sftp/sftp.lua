@@ -6,7 +6,7 @@ local Path = require('plenary.path')
 
 local execute_sftp_command -- forward declaration
 
--- Helper: Format timestamp (moved to the top so it’s available everywhere)
+-- Helper: Format timestamp (moved to the top so it's available everywhere)
 local function format_timestamp(timestamp)
   return os.date("%Y-%m-%d %H:%M:%S", timestamp)
 end
@@ -416,6 +416,7 @@ function M.download_directory()
           local local_size = vim.fn.getfsize(local_path)
           if local_mtime == -1 or local_mtime < info.mtime then
             table.insert(files_to_download, {
+              name = vim.fn.fnamemodify(relative_file, ':t'),
               remote_file = relative_file,
               local_path = local_path,
               info = info,
@@ -433,46 +434,48 @@ function M.download_directory()
       return
     end
 
-    table.sort(files_to_download, function(a, b)
-      return vim.fn.fnamemodify(a.remote_file, ':t') < vim.fn.fnamemodify(b.remote_file, ':t')
-    end)
+    table.sort(files_to_download, function(a, b) return a.name < b.name end)
 
-    local summary = string.format("The following %d files will be downloaded (total %d bytes) to %s:\n\n",
-      #files_to_download, total_download_size, relative_dir)
+    -- Create a formatted list of files for display
+    local items = {}
     for _, file in ipairs(files_to_download) do
-      local filename = vim.fn.fnamemodify(file.remote_file, ':t')
-      summary = summary .. string.format("  • %s\n    Remote: %s (%d bytes)\n    Local: %s (%d bytes)\n\n",
-        filename,
+      table.insert(items, string.format("%-30s  %20s  %10d bytes  %s",
+        file.name,
         format_timestamp(file.info.mtime),
         file.info.size,
-        file.local_mtime == 0 and "Not found" or format_timestamp(file.local_mtime),
-        file.local_size
-      )
+        file.local_mtime == 0 and "(New)" or "(Update)"
+      ))
     end
 
-    vim.ui.select({'Yes', 'No'}, {
-      prompt = summary .. "\nProceed with download?",
-      default = 'No'
-    }, function(choice)
-      if choice ~= 'Yes' then
-        vim.notify("Download cancelled", vim.log.levels.INFO)
-        return
-      end
+    -- Show the list first
+    vim.ui.select(items, {
+      prompt = string.format("Found %d files to download (total %d bytes). Review the list:\n", #files_to_download, total_download_size),
+      format_item = function(item) return item end
+    }, function(_, _)
+      -- After showing the list, ask for confirmation
+      vim.ui.select({'Yes', 'No'}, {
+        prompt = string.format("\nProceed with downloading %d files?", #files_to_download),
+        default = 'No'
+      }, function(choice)
+        if choice ~= 'Yes' then
+          vim.notify("Download cancelled", vim.log.levels.INFO)
+          return
+        end
 
-      for _, file in ipairs(files_to_download) do
-        local batch_cmd = add_download_command(file.remote_file)
-        execute_sftp_command(conf, batch_cmd, function(success, output)
-          if success then
-            vim.notify(string.format('Downloaded %s', file.remote_file), vim.log.levels.INFO)
-            if file.remote_file == vim.fn.expand('%:p') then
-              vim.cmd('e!')
+        for _, file in ipairs(files_to_download) do
+          local batch_cmd = add_download_command(file.remote_file)
+          execute_sftp_command(conf, batch_cmd, function(success, output)
+            if success then
+              vim.notify(string.format('Downloaded %s', file.remote_file), vim.log.levels.INFO)
+              if file.remote_file == vim.fn.expand('%:p') then
+                vim.cmd('e!')
+              end
+            else
+              vim.notify(string.format('Failed to download %s: %s', file.remote_file, table.concat(output, '\n')), vim.log.levels.ERROR)
             end
-          else
-            vim.notify(string.format('Failed to download %s: %s',
-              file.remote_file, table.concat(output, '\n')), vim.log.levels.ERROR)
-          end
-        end)
-      end
+          end)
+        end
+      end)
     end)
   end)
 end
