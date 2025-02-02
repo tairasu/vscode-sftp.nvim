@@ -77,37 +77,25 @@ local function create_sftp_commands(conf)
     return commands
 end
 
--- Helper: Retrieve remote file listing using "ls -lR"
-local function get_remote_file_list(conf, callback)
-    local remote_files = {}
-    local batch_cmd = "ls -lR\n"
+-- Helper: Recursively retrieve remote file listing using "ls -l"
+local function walk_remote_dir(conf, dir, callback)
+    -- Build a batch command that changes to the directory, lists its contents, then quits.
+    local batch_cmd = string.format("cd %s\nls -l\nquit\n", vim.fn.shellescape(dir))
     execute_sftp_command(conf, batch_cmd, function(success, output)
         if not success then
-            callback(nil)
+            callback(false, {})
             return
         end
 
-        local current_dir = "."
+        local entries = {}
+        -- Parse each line that is not the prompt, blank, or a "total" line.
         for _, line in ipairs(output) do
-            if line:match(":$") then
-                -- Directory header line (e.g. "./subdir:" )
-                local dir = line:gsub(":$", "")
-                -- If the directory equals the remotePath then use '.' for relative paths
-                if dir == conf.remotePath then
-                    current_dir = "."
-                else
-                    -- remove any leading "./" if present
-                    current_dir = dir:gsub("^%./", "")
-                end
-            elseif line:match("^total") then
-                -- skip "total" lines
-            elseif line ~= "" then
-                -- Expect file lines in the ls -l format.
-                -- Typical output: "-rw-r--r--    1 user group  1234 Jan 01 12:34 filename"
-                local perm, links, user, group, size, month, day, time_or_year, filename =
+            if not line:match("^sftp>") and line ~= "" and not line:match("^total") then
+                local perm, links, user, group, size, month, day, time_or_year, name =
                     line:match("^(%S+)%s+(%d+)%s+(%S+)%s+(%S+)%s+(%d+)%s+(%a+)%s+(%d+)%s+(%S+)%s+(.+)$")
-                if perm and filename then
-                    local months = { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6, Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12 }
+                if perm and name then
+                    local months = { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
+                                     Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12 }
                     local m = months[month] or 1
                     local year, hour, min
                     if time_or_year:find(":") then
@@ -118,18 +106,63 @@ local function get_remote_file_list(conf, callback)
                         hour, min = 0, 0
                     end
                     day = tonumber(day) or 1
-                    local file_mtime = os.time({ year = year, month = m, day = day, hour = tonumber(hour) or 0, min = tonumber(min) or 0, sec = 0 })
-                    local relative_path
-                    if current_dir == "." then
-                        relative_path = filename
-                    else
-                        relative_path = current_dir .. "/" .. filename
-                    end
-                    remote_files[relative_path] = { mtime = file_mtime, size = tonumber(size) }
+                    local file_mtime = os.time({
+                        year = year,
+                        month = m,
+                        day = day,
+                        hour = tonumber(hour) or 0,
+                        min = tonumber(min) or 0,
+                        sec = 0
+                    })
+                    local is_dir = perm:sub(1,1) == "d"
+                    table.insert(entries, {
+                        name = name,
+                        is_dir = is_dir,
+                        mtime = file_mtime,
+                        size = tonumber(size),
+                        path = dir .. "/" .. name
+                    })
                 end
             end
         end
-        callback(remote_files)
+
+        local results = {}  -- will accumulate file information from this directory and its children.
+        local pending = 0   -- number of recursive calls still pending
+
+        local function finish()
+            if pending == 0 then
+                callback(true, results)
+            end
+        end
+
+        -- Add the current directory's entries to results and, if the entry is a directory,
+        -- recursively walk it.
+        for _, entry in ipairs(entries) do
+            results[entry.path] = { mtime = entry.mtime, size = entry.size }
+            if entry.is_dir then
+                pending = pending + 1
+                walk_remote_dir(conf, entry.path, function(succ, sub_entries)
+                    for path, info in pairs(sub_entries) do
+                        results[path] = info
+                    end
+                    pending = pending - 1
+                    finish()
+                end)
+            end
+        end
+
+        finish()
+    end)
+end
+
+-- Updated function to retrieve the full remote file listing recursively.
+local function get_remote_file_list(conf, callback)
+    walk_remote_dir(conf, conf.remotePath, function(success, listing)
+        if not success then
+            callback(nil)
+        else
+            callback(listing)
+        end
     end)
 end
 
