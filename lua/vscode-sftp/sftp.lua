@@ -372,7 +372,225 @@ local function add_download_command(file)
     return cmd
 end
 
--- Sync entire project bidirectionally
+-- Helper: Format file size difference
+local function format_size_diff(new_size, old_size)
+    local diff = new_size - old_size
+    local abs_diff = math.abs(diff)
+    local sign = diff >= 0 and "+" or "-"
+    
+    if abs_diff < 1024 then
+        return string.format("%s%d B", sign, abs_diff)
+    elseif abs_diff < 1024 * 1024 then
+        return string.format("%s%.1f KB", sign, abs_diff / 1024)
+    else
+        return string.format("%s%.1f MB", sign, abs_diff / (1024 * 1024))
+    end
+end
+
+-- Helper: Format timestamp
+local function format_timestamp(timestamp)
+    return os.date("%Y-%m-%d %H:%M:%S", timestamp)
+end
+
+-- Helper: Get file info string
+local function get_file_info_string(file, old_mtime, old_size, new_mtime, new_size)
+    return string.format("%s\n  Old: %s (%d bytes)\n  New: %s (%d bytes) (%s)",
+        file,
+        format_timestamp(old_mtime),
+        old_size,
+        format_timestamp(new_mtime),
+        new_size,
+        format_size_diff(new_size, old_size)
+    )
+end
+
+-- Download all files in current directory
+function M.download_directory()
+    local conf = config.find_config()
+    if not conf then
+        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        return
+    end
+    
+    local current_file = vim.fn.expand('%:p')
+    local current_dir = vim.fn.fnamemodify(current_file, ':h')
+    local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
+    
+    -- First, get remote file listing
+    get_remote_file_list(conf, function(remote_listing)
+        if not remote_listing then
+            vim.notify("Failed to retrieve remote file list", vim.log.levels.ERROR)
+            return
+        end
+        
+        -- Collect files to download
+        local files_to_download = {}
+        local total_download_size = 0
+        
+        for remote_file, info in pairs(remote_listing) do
+            if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
+                local relative_file = remote_file:sub(#conf.remotePath + 2)
+                local file_dir = vim.fn.fnamemodify(relative_file, ':h')
+                
+                -- Check if file is in current directory
+                if file_dir == relative_dir then
+                    local local_path = Path:new(current_dir):joinpath(vim.fn.fnamemodify(relative_file, ':t')).filename
+                    local local_mtime = vim.fn.getftime(local_path)
+                    local local_size = vim.fn.getfsize(local_path)
+                    
+                    -- If file doesn't exist locally or is older
+                    if local_mtime == -1 or local_mtime < info.mtime then
+                        table.insert(files_to_download, {
+                            remote_file = relative_file,
+                            local_path = local_path,
+                            info = info,
+                            local_mtime = local_mtime == -1 and 0 or local_mtime,
+                            local_size = local_size == -1 and 0 or local_size
+                        })
+                        total_download_size = total_download_size + info.size
+                    end
+                end
+            end
+        end
+        
+        if #files_to_download == 0 then
+            vim.notify("No files to download in current directory", vim.log.levels.INFO)
+            return
+        end
+        
+        -- Build summary message
+        local summary = string.format("Will download %d files (total %d bytes) to %s:\n",
+            #files_to_download, total_download_size, relative_dir)
+        for _, file in ipairs(files_to_download) do
+            summary = summary .. get_file_info_string(
+                vim.fn.fnamemodify(file.remote_file, ':t'),
+                file.local_mtime,
+                file.local_size,
+                file.info.mtime,
+                file.info.size
+            ) .. "\n"
+        end
+        
+        -- Ask for confirmation
+        vim.ui.select({'Yes', 'No'}, {
+            prompt = summary .. "\nProceed with download?",
+            default = 'No'
+        }, function(choice)
+            if choice ~= 'Yes' then
+                vim.notify("Download cancelled", vim.log.levels.INFO)
+                return
+            end
+            
+            -- Download files
+            for _, file in ipairs(files_to_download) do
+                local batch_cmd = add_download_command(file.remote_file)
+                execute_sftp_command(conf, batch_cmd, function(success, output)
+                    if success then
+                        vim.notify(string.format('Downloaded %s', file.remote_file), vim.log.levels.INFO)
+                    else
+                        vim.notify(string.format('Failed to download %s: %s',
+                            file.remote_file, table.concat(output, '\n')), vim.log.levels.ERROR)
+                    end
+                end)
+            end
+        end)
+    end)
+end
+
+-- Upload all files in current directory
+function M.upload_directory()
+    local conf = config.find_config()
+    if not conf then
+        vim.notify('No SFTP configuration found', vim.log.levels.ERROR)
+        return
+    end
+    
+    local current_file = vim.fn.expand('%:p')
+    local current_dir = vim.fn.fnamemodify(current_file, ':h')
+    local relative_dir = Path:new(current_dir):make_relative(vim.fn.getcwd())
+    
+    -- Get local files
+    local local_files = vim.fn.systemlist(string.format("find '%s' -type f -maxdepth 1", current_dir))
+    if #local_files == 0 then
+        vim.notify("No files found in current directory", vim.log.levels.INFO)
+        return
+    end
+    
+    -- Get remote file listing for comparison
+    get_remote_file_list(conf, function(remote_listing)
+        if not remote_listing then
+            vim.notify("Failed to retrieve remote file list", vim.log.levels.ERROR)
+            return
+        end
+        
+        -- Collect files to upload
+        local files_to_upload = {}
+        local total_upload_size = 0
+        
+        for _, local_path in ipairs(local_files) do
+            local relative_path = Path:new(local_path):make_relative(vim.fn.getcwd())
+            local remote_key = conf.remotePath .. "/" .. relative_path
+            local local_mtime = vim.fn.getftime(local_path)
+            local local_size = vim.fn.getfsize(local_path)
+            
+            local remote_info = remote_listing[remote_key]
+            if not remote_info or local_mtime > remote_info.mtime then
+                table.insert(files_to_upload, {
+                    local_path = local_path,
+                    relative_path = relative_path,
+                    local_mtime = local_mtime,
+                    local_size = local_size,
+                    remote_info = remote_info or { mtime = 0, size = 0 }
+                })
+                total_upload_size = total_upload_size + local_size
+            end
+        end
+        
+        if #files_to_upload == 0 then
+            vim.notify("No files to upload in current directory", vim.log.levels.INFO)
+            return
+        end
+        
+        -- Build summary message
+        local summary = string.format("Will upload %d files (total %d bytes) from %s:\n",
+            #files_to_upload, total_upload_size, relative_dir)
+        for _, file in ipairs(files_to_upload) do
+            summary = summary .. get_file_info_string(
+                vim.fn.fnamemodify(file.local_path, ':t'),
+                file.remote_info.mtime,
+                file.remote_info.size,
+                file.local_mtime,
+                file.local_size
+            ) .. "\n"
+        end
+        
+        -- Ask for confirmation
+        vim.ui.select({'Yes', 'No'}, {
+            prompt = summary .. "\nProceed with upload?",
+            default = 'No'
+        }, function(choice)
+            if choice ~= 'Yes' then
+                vim.notify("Upload cancelled", vim.log.levels.INFO)
+                return
+            end
+            
+            -- Upload files
+            for _, file in ipairs(files_to_upload) do
+                local batch_cmd = add_upload_command(file.relative_path)
+                execute_sftp_command(conf, batch_cmd, function(success, output)
+                    if success then
+                        vim.notify(string.format('Uploaded %s', file.relative_path), vim.log.levels.INFO)
+                    else
+                        vim.notify(string.format('Failed to upload %s: %s',
+                            file.relative_path, table.concat(output, '\n')), vim.log.levels.ERROR)
+                    end
+                end)
+            end
+        end)
+    end)
+end
+
+-- Sync entire project bidirectionally (only newest files)
 function M.sync_project()
     local conf = config.find_config()
     if not conf then
@@ -387,91 +605,156 @@ function M.sync_project()
             return
         end
 
-        -- Get the local file list from git (or fall back to find)
+        -- Get the local file list
         local files = vim.fn.systemlist("git ls-files 2>/dev/null || find . -type f")
-        local filtered_files = {}
-        local local_files_map = {}
+        local files_to_sync = {}
+        local total_sync_size = 0
         
-        -- Filter files based on ignore patterns and build local files map
-        for _, file in ipairs(files) do
+        -- Compare each file
+        for _, local_path in ipairs(files) do
+            -- Skip ignored files
             local skip = false
             if conf.ignore then
                 for _, pattern in ipairs(conf.ignore) do
-                    if file:match(pattern) then
+                    if local_path:match(pattern) then
                         skip = true
                         break
                     end
                 end
             end
+            
             if not skip then
-                table.insert(filtered_files, file)
-                local_files_map[file] = vim.fn.getftime(file)
+                local remote_key = conf.remotePath .. "/" .. local_path
+                local local_mtime = vim.fn.getftime(local_path)
+                local local_size = vim.fn.getfsize(local_path)
+                local remote_info = remote_listing[remote_key]
+                
+                if remote_info then
+                    -- File exists on both sides
+                    if local_mtime > remote_info.mtime then
+                        -- Local is newer
+                        table.insert(files_to_sync, {
+                            path = local_path,
+                            action = "upload",
+                            old_mtime = remote_info.mtime,
+                            new_mtime = local_mtime,
+                            old_size = remote_info.size,
+                            new_size = local_size
+                        })
+                        total_sync_size = total_sync_size + local_size
+                    elseif remote_info.mtime > local_mtime then
+                        -- Remote is newer
+                        table.insert(files_to_sync, {
+                            path = local_path,
+                            action = "download",
+                            old_mtime = local_mtime,
+                            new_mtime = remote_info.mtime,
+                            old_size = local_size,
+                            new_size = remote_info.size
+                        })
+                        total_sync_size = total_sync_size + remote_info.size
+                    end
+                else
+                    -- File only exists locally
+                    table.insert(files_to_sync, {
+                        path = local_path,
+                        action = "upload",
+                        old_mtime = 0,
+                        new_mtime = local_mtime,
+                        old_size = 0,
+                        new_size = local_size
+                    })
+                    total_sync_size = total_sync_size + local_size
+                end
             end
         end
-
-        -- Find the newest file (both local and remote)
-        local newest_file = nil
-        local newest_mtime = 0
-        local is_remote = false
-
-        -- Check local files
-        for file, mtime in pairs(local_files_map) do
-            if mtime > newest_mtime then
-                newest_mtime = mtime
-                newest_file = file
-                is_remote = false
-            end
-        end
-
-        -- Check remote files
+        
+        -- Check for files that only exist remotely
         for remote_file, info in pairs(remote_listing) do
             if remote_file:sub(1, #conf.remotePath + 1) == conf.remotePath .. "/" then
                 local relative_file = remote_file:sub(#conf.remotePath + 2)
-                local remote_mtime = info.mtime or 0
-
-                -- Only consider remote file if it's newer than what we've found
-                -- and either doesn't exist locally or is different from local
-                local local_mtime = local_files_map[relative_file] or 0
-                if remote_mtime > newest_mtime and remote_mtime > local_mtime then
-                    newest_mtime = remote_mtime
-                    newest_file = relative_file
-                    is_remote = true
+                if vim.fn.filereadable(relative_file) == 0 then
+                    -- Skip ignored files
+                    local skip = false
+                    if conf.ignore then
+                        for _, pattern in ipairs(conf.ignore) do
+                            if relative_file:match(pattern) then
+                                skip = true
+                                break
+                            end
+                        end
+                    end
+                    
+                    if not skip then
+                        table.insert(files_to_sync, {
+                            path = relative_file,
+                            action = "download",
+                            old_mtime = 0,
+                            new_mtime = info.mtime,
+                            old_size = 0,
+                            new_size = info.size
+                        })
+                        total_sync_size = total_sync_size + info.size
+                    end
                 end
             end
         end
-
-        if not newest_file then
+        
+        if #files_to_sync == 0 then
             vim.notify("Everything is already in sync", vim.log.levels.INFO)
             return
         end
-
-        -- Sync the newest file
-        if is_remote then
-            -- Download the remote file
-            vim.fn.mkdir(vim.fn.fnamemodify(newest_file, ":h"), "p")
-            local batch_cmd = add_download_command(newest_file)
-            execute_sftp_command(conf, batch_cmd, function(success, output)
-                if success then
-                    vim.notify("Synced (downloaded): " .. newest_file, vim.log.levels.INFO)
-                    -- Reload the buffer if the current file was downloaded
-                    if newest_file == vim.fn.expand('%:p') then
-                        vim.cmd('e!')
-                    end
-                else
-                    vim.notify("Sync failed: " .. table.concat(output, "\n"), vim.log.levels.ERROR)
-                end
-            end)
-        else
-            -- Upload the local file
-            local batch_cmd = add_upload_command(newest_file)
-            execute_sftp_command(conf, batch_cmd, function(success, output)
-                if success then
-                    vim.notify("Synced (uploaded): " .. newest_file, vim.log.levels.INFO)
-                else
-                    vim.notify("Sync failed: " .. table.concat(output, "\n"), vim.log.levels.ERROR)
-                end
-            end)
+        
+        -- Build summary message
+        local summary = string.format("Will sync %d files (total %d bytes):\n",
+            #files_to_sync, total_sync_size)
+        for _, file in ipairs(files_to_sync) do
+            summary = summary .. string.format("[%s] %s\n",
+                file.action:upper(),
+                get_file_info_string(
+                    file.path,
+                    file.old_mtime,
+                    file.old_size,
+                    file.new_mtime,
+                    file.new_size
+                )
+            ) .. "\n"
         end
+        
+        -- Ask for confirmation
+        vim.ui.select({'Yes', 'No'}, {
+            prompt = summary .. "\nProceed with sync?",
+            default = 'No'
+        }, function(choice)
+            if choice ~= 'Yes' then
+                vim.notify("Sync cancelled", vim.log.levels.INFO)
+                return
+            end
+            
+            -- Perform sync operations
+            for _, file in ipairs(files_to_sync) do
+                local batch_cmd
+                if file.action == "upload" then
+                    batch_cmd = add_upload_command(file.path)
+                else
+                    vim.fn.mkdir(vim.fn.fnamemodify(file.path, ":h"), "p")
+                    batch_cmd = add_download_command(file.path)
+                end
+                
+                execute_sftp_command(conf, batch_cmd, function(success, output)
+                    if success then
+                        vim.notify(string.format('Synced (%s): %s', file.action, file.path), vim.log.levels.INFO)
+                        -- Reload buffer if current file was downloaded
+                        if file.action == "download" and file.path == vim.fn.expand('%:p') then
+                            vim.cmd('e!')
+                        end
+                    else
+                        vim.notify(string.format('Failed to %s %s: %s',
+                            file.action, file.path, table.concat(output, '\n')), vim.log.levels.ERROR)
+                    end
+                end)
+            end
+        end)
     end)
 end
 

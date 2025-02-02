@@ -101,6 +101,24 @@ function M.setup(opts)
         end
         sftp.sync_project()
     end, {})
+
+    vim.api.nvim_create_user_command('SFTPDownloadDir', function()
+        local conf = config.find_config()
+        if not conf then
+            vim.notify('No sftp.json configuration found', vim.log.levels.ERROR)
+            return
+        end
+        sftp.download_directory()
+    end, {})
+
+    vim.api.nvim_create_user_command('SFTPUploadDir', function()
+        local conf = config.find_config()
+        if not conf then
+            vim.notify('No sftp.json configuration found', vim.log.levels.ERROR)
+            return
+        end
+        sftp.upload_directory()
+    end, {})
     
     vim.api.nvim_create_user_command('SFTPInit', function()
         -- Create .vscode directory if it doesn't exist
