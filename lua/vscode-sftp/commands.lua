@@ -324,4 +324,4 @@ function M.sync_project()
   require('vscode-sftp.sync').sync_project()
 end
 
-return M 
+return M

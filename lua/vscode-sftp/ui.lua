@@ -120,6 +120,11 @@ function M.show_success(msg)
   vim.notify(msg, vim.log.levels.INFO)
 end
 
+-- Show info message
+function M.show_info(msg)
+  vim.notify(msg, vim.log.levels.INFO)
+end
+
 -- Show warning message
 function M.show_warning(msg)
   vim.notify(msg, vim.log.levels.WARN)
