@@ -177,6 +177,7 @@ end
 
 -- Format confirmation prompt for file operations
 function M.format_confirmation_prompt(num_files)
+  vim.notify("Called format_confirmation_prompt with " .. num_files, vim.log.levels.DEBUG)
   return string.format("Do you want to process %d file%s?", 
     num_files, 
     num_files > 1 and "s" or ""
