@@ -27,6 +27,20 @@ function M.setup(opts)
   -- Initialize configuration
   config.setup(opts)
 
+  -- Create autocommand group for SFTP
+  local group = vim.api.nvim_create_augroup("VSCodeSFTP", { clear = true })
+
+  -- Add BufWritePost autocommand to check uploadOnSave
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group = group,
+    callback = function()
+      local conf = config.find_config()
+      if conf and conf.uploadOnSave then
+        commands.upload_current_file()
+      end
+    end,
+  })
+
   -- Create user commands
   vim.api.nvim_create_user_command('SFTPUpload', function()
     local conf = config.find_config()
